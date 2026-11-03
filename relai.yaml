@@ -1,10 +1,9 @@
 apiVersion: relai.dev/v0
 id: relai-team
-summary: "Optional self-hosted team server for Relai: live cross-repo board, MCP interface, deployment presets."
+summary: "Optional self-hosted team server for Relai: live cross-repo board with claim/release, and an MCP interface for agents."
 owners: [ECG-Rudy-Glt]
 provides:
   - capability: team.board
   - capability: team.mcp-interface
-  - capability: team.deployment-presets
 consumes:
   - capability: agents.repo-contract

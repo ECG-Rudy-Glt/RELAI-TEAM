@@ -14,9 +14,9 @@ Start here:
 - Record decisions and pitfalls in `.relai/notes.md`, not in chat.
 
 ## This repo
-- Go, standard library only unless a dependency is clearly worth it (the MCP SDK and an embedded
-  storage driver, if one is used, are the documented exceptions — see `design.md` of the active
-  OpenSpec change for why).
+- Go, standard library only unless a dependency is clearly worth it. So far there are none: the
+  event log is plain JSON-lines and the MCP adapter is hand-rolled JSON-RPC (see the archived
+  `mcp-team-interface` design for why).
 - Before committing: `gofmt -l .` (must be empty), `go vet ./...`, `go test ./...`.
 - Everything is written in English (code, docs, commits, issues).
 - Commit messages: conventional style (`feat:`, `fix:`, `docs:`…), no Co-Authored-By or
