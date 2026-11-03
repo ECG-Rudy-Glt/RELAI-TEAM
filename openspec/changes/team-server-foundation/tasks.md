@@ -46,7 +46,7 @@
       using `net/http`'s method+path `ServeMux` patterns, backed by the board (task 3); verify with
       `httptest` covering an unknown repo (spec scenario: reports "not tracked", not stale/fake
       data) and the claim/release round trip.
-- [ ] 4.3 Add `cmd/relai-server/main.go`: loads a declared-repos config and the identity token map,
+- [x] 4.3 Add `cmd/relai-server/main.go`: loads a declared-repos config and the identity token map,
       constructs the store/board/aggregate wiring, runs aggregation on a timer (so the board
       reflects a task's status change without a manual rebuild, per the spec), and serves the HTTP
       API; verify by running the binary against a small fixture config and curling `/items`.
