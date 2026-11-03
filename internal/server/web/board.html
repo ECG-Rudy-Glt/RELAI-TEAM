@@ -49,6 +49,8 @@ aside h3{margin:0 0 8px;font-size:12px;letter-spacing:.06em;text-transform:upper
 .repos{display:grid;gap:4px;font-size:12.5px}
 .repos div{display:flex;justify-content:space-between;gap:8px}
 .repos .bad{color:var(--blocked)}
+.repos .note{color:var(--warn);font-size:11.5px;display:block}
+.repos .note span{display:block;word-break:break-word}
 .empty{color:var(--muted);font-size:12px;padding:6px 2px}
 #login{position:fixed;inset:0;display:grid;place-items:center;background:var(--bg);z-index:10}
 #login form{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:24px;width:min(380px,92vw);display:grid;gap:12px}
@@ -165,7 +167,10 @@ function render(){
     holders.map(h=>chip("@ "+h,filterWho===h,"who",h)).join("");
   $("count").textContent=items.length+" items · "+items.filter(i=>i.holder).length+" claimed";
   $("rp").textContent=repos.filter(r=>r.readable).length+"/"+repos.length+" repos readable";
-  $("repos").innerHTML=repos.map(r=>`<div class="${r.readable?"":"bad"}"><span>${esc(r.id||r.source.split("/").pop())}</span><span>${r.readable?r.items:esc(r.error||"unreadable")}</span></div>`).join("");
+  $("repos").innerHTML=repos.map(r=>`<div class="${r.readable?"":"bad"}"><span>${esc(r.id||r.source.split("/").pop())}</span><span>${r.readable?r.items:esc(r.error||"unreadable")}</span></div>`+
+    ((r.notes||[]).filter(n=>n!=="no relai.yaml").map(n=>`<div class="note"><span>⚠ ${esc(n)}</span></div>`).join(""))).join("");
+  const probs=repos.filter(r=>r.readable&&(r.notes||[]).some(n=>n!=="no relai.yaml")).length;
+  $("rp").textContent=repos.filter(r=>r.readable).length+"/"+repos.length+" repos readable"+(probs?" · "+probs+" with warnings":"");
 }
 
 $("filters").onclick=e=>{

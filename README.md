@@ -73,6 +73,11 @@ Next
 Options: `--repos a,b` (paths or clone URLs) instead of or besides `--scan`, `--members`, `--listen`,
 `--dir`, `--force`. The first member is the administrator.
 
+**The board is empty?** The server reads repos through `bd` and `openspec`; if one is not on its `PATH` the repo
+is still listed but its tasks are not, and the server says so at startup (`WARNING: bd is not on PATH…`), in the
+web board (the "with warnings" pill and a note under each repo) and in `GET /repos`. Install the tool, or use the
+Docker image, which bundles all three.
+
 **Nothing to try it on?** Make fictional projects first:
 
 ```sh
