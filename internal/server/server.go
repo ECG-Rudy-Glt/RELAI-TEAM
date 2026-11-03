@@ -35,6 +35,7 @@ type Server struct {
 	agg      *aggregate.Aggregator
 	declared []string
 	tokens   map[[32]byte]string
+	admins   map[string]bool // identities allowed to force a release
 
 	mu     sync.RWMutex
 	status map[string]RepoStatus // by source
@@ -50,7 +51,15 @@ func New(cfg Config, b *board.Board, agg *aggregate.Aggregator) (*Server, error)
 	if err != nil {
 		return nil, err
 	}
+	admins := map[string]bool{}
+	for _, m := range cfg.Members {
+		if m.Admin {
+			admins[m.Identity] = true
+		}
+	}
+	b.SetLease(cfg.ClaimLeaseDuration())
 	return &Server{
+		admins:   admins,
 		board:    b,
 		agg:      agg,
 		declared: append([]string(nil), cfg.Repos...),
@@ -248,7 +257,18 @@ func (s *Server) release(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "no such item")
 		return
 	}
-	it, err := s.board.Release(id, identity(r))
+	who := identity(r)
+	var it board.Item
+	var err error
+	if r.URL.Query().Get("force") == "true" {
+		if !s.admins[who] {
+			writeError(w, http.StatusForbidden, "forcing a release needs an administrator")
+			return
+		}
+		it, err = s.board.ForceRelease(id, who)
+	} else {
+		it, err = s.board.Release(id, who)
+	}
 	var nh *board.NotHolderError
 	switch {
 	case err == nil:

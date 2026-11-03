@@ -31,6 +31,7 @@ type Event struct {
 	Source   string    `json:"source,omitempty"` // repo_declared: the path or URL it is read from
 	ItemID   string    `json:"item_id,omitempty"`
 	Identity string    `json:"identity,omitempty"`
+	By       string    `json:"by,omitempty"` // item_released: the administrator who forced it, if any
 	Title    string    `json:"title,omitempty"`
 	Kind     string    `json:"kind,omitempty"`
 	Status   string    `json:"status,omitempty"`

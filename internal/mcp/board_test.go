@@ -46,9 +46,9 @@ func startServer(t *testing.T, n int) *httptest.Server {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { lg.Close() })
-	cfg := server.Config{Repos: []string{repo}, Members: []server.Member{
+	cfg := server.Config{ClaimLease: "8h", Repos: []string{repo}, Members: []server.Member{
 		{Identity: "alice", Token: "alice-token"}, {Identity: "bob", Token: "bob-token"},
-		{Identity: "carol", Token: "carol-token"}, {Identity: "dave", Token: "dave-token"},
+		{Identity: "carol", Token: "carol-token", Admin: true}, {Identity: "dave", Token: "dave-token"},
 	}}
 	srv, err := server.New(cfg, board.New(lg, nil), &aggregate.Aggregator{Run: run})
 	if err != nil {

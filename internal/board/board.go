@@ -19,6 +19,9 @@ type Item struct {
 	aggregate.Item
 	Holder    string    `json:"holder,omitempty"`
 	ClaimedAt time.Time `json:"claimed_at,omitempty"`
+	// ExpiresAt is when the claim lapses unless renewed; zero when unheld or leases are off.
+	// Computed when read, never stored.
+	ExpiresAt time.Time `json:"expires_at,omitempty"`
 }
 
 // ErrNotFound is returned for an item the board does not have.
@@ -56,6 +59,51 @@ type Board struct {
 	log   Appender
 	repos map[string]string // repo ID -> source it was last read from
 	items map[string]*Item
+
+	lease time.Duration // 0: claims never lapse
+	now   func() time.Time
+}
+
+// SetLease makes claims lapse after d unless renewed (0 turns lapsing off). It applies to claims
+// already in the log too, because a claim's age is derived from the time of its event.
+func (b *Board) SetLease(d time.Duration) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.lease = d
+}
+
+// SetClock replaces the clock; for tests.
+func (b *Board) SetClock(now func() time.Time) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.now = now
+}
+
+func (b *Board) clock() time.Time {
+	if b.now != nil {
+		return b.now()
+	}
+	return time.Now()
+}
+
+// holder is who holds the item right now: nobody once its lease has lapsed. Callers hold b.mu.
+func (b *Board) holder(it *Item) string {
+	if it.Holder != "" && b.lease > 0 && !b.clock().Before(it.ClaimedAt.Add(b.lease)) {
+		return ""
+	}
+	return it.Holder
+}
+
+// view is the item as clients see it. Callers hold b.mu.
+func (b *Board) view(it *Item) Item {
+	v := *it
+	v.Holder = b.holder(it)
+	if v.Holder == "" {
+		v.ClaimedAt = time.Time{}
+	} else if b.lease > 0 {
+		v.ExpiresAt = it.ClaimedAt.Add(b.lease)
+	}
+	return v
 }
 
 // New builds a board from past events, then records new ones through log.
@@ -107,7 +155,7 @@ func (b *Board) Items() []Item {
 	defer b.mu.Unlock()
 	out := make([]Item, 0, len(b.items))
 	for _, it := range b.items {
-		out = append(out, *it)
+		out = append(out, b.view(it))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
@@ -149,11 +197,12 @@ func (b *Board) Item(id string) (Item, bool) {
 	if !ok {
 		return Item{}, false
 	}
-	return *it, true
+	return b.view(it), true
 }
 
-// Claim gives the item to who, if nobody holds it. Under contention exactly one caller wins; the
-// others get a *HeldError naming the winner. Claiming an item you already hold succeeds again.
+// Claim gives the item to who if nobody holds it, or its claim has lapsed. Under contention exactly
+// one caller wins; the others get a *HeldError naming the winner. Claiming an item you already hold
+// renews your claim.
 func (b *Board) Claim(id, who string) (Item, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -161,17 +210,13 @@ func (b *Board) Claim(id, who string) (Item, error) {
 	if !ok {
 		return Item{}, ErrNotFound
 	}
-	switch it.Holder {
-	case who:
-		return *it, nil
-	case "":
-	default:
-		return Item{}, &HeldError{Holder: it.Holder}
+	if h := b.holder(it); h != "" && h != who {
+		return Item{}, &HeldError{Holder: h}
 	}
-	if err := b.record(store.Event{Type: store.ItemClaimed, ItemID: id, Repo: it.Repo, Identity: who}); err != nil {
+	if err := b.record(store.Event{Type: store.ItemClaimed, ItemID: id, Repo: it.Repo, Identity: who, Time: b.clock().UTC()}); err != nil {
 		return Item{}, err
 	}
-	return *it, nil
+	return b.view(it), nil
 }
 
 // Release frees the item. Only its holder can release it.
@@ -182,13 +227,32 @@ func (b *Board) Release(id, who string) (Item, error) {
 	if !ok {
 		return Item{}, ErrNotFound
 	}
-	if it.Holder != who {
-		return Item{}, &NotHolderError{Holder: it.Holder}
+	if h := b.holder(it); h != who {
+		return Item{}, &NotHolderError{Holder: h}
 	}
 	if err := b.record(store.Event{Type: store.ItemReleased, ItemID: id, Repo: it.Repo, Identity: who}); err != nil {
 		return Item{}, err
 	}
-	return *it, nil
+	return b.view(it), nil
+}
+
+// ForceRelease frees an item whoever holds it, on behalf of the administrator by. The event keeps
+// the former holder as its identity and the administrator in By, so the history says who freed what.
+func (b *Board) ForceRelease(id, by string) (Item, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	it, ok := b.items[id]
+	if !ok {
+		return Item{}, ErrNotFound
+	}
+	h := b.holder(it)
+	if h == "" {
+		return Item{}, &NotHolderError{}
+	}
+	if err := b.record(store.Event{Type: store.ItemReleased, ItemID: id, Repo: it.Repo, Identity: h, By: by}); err != nil {
+		return Item{}, err
+	}
+	return b.view(it), nil
 }
 
 // MergeAggregated reconciles a fresh aggregation into the board. readRepos are the repos that were

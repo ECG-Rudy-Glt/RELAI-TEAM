@@ -155,7 +155,8 @@ function render(){
         <div class="ti">${esc(i.title)}</div>
         <div class="meta"><span class="repo" style="background:${color(i.repo)}">${esc(i.repo)}</span>
         <span class="kind">${i.kind==="beads-task"?"bd":"spec"}</span>
-        ${i.holder?`<span class="who"><span class="av" style="background:${color(i.holder)}">${esc(i.holder[0].toUpperCase())}</span>${esc(i.holder)}${i.holder===me?" (you)":""}</span>`:""}</div></div>`).join("")||`<div class="empty">nothing here</div>`)+`</section>`;
+        ${i.holder?`<span class="who"><span class="av" style="background:${color(i.holder)}">${esc(i.holder[0].toUpperCase())}</span>${esc(i.holder)}${i.holder===me?" (you)":""}</span>`:""}</div>
+        ${i.holder&&i.expires_at?`<div class="meta" style="margin-top:4px">claim lapses ${esc(new Date(i.expires_at).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"}))} unless renewed</div>`:""}</div>`).join("")||`<div class="empty">nothing here</div>`)+`</section>`;
   }).join("");
   const holders=["(unclaimed)",...new Set(items.map(i=>i.holder).filter(Boolean))].sort();
   const chip=(label,on,f,v)=>`<span class="chip${on?" on":""}" data-f="${f}" data-v="${esc(v)}">${esc(label)}</span>`;

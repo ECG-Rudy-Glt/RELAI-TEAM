@@ -24,6 +24,8 @@ type Item struct {
 	Title  string `json:"title"`
 	Status string `json:"status"`
 	Holder string `json:"holder,omitempty"`
+	// ExpiresAt is when the holder's claim lapses unless renewed (zero if leases are off).
+	ExpiresAt time.Time `json:"expires_at,omitempty"`
 }
 
 // Client talks to a relai-server as one team member. It decides nothing: every rule (identity,
@@ -106,9 +108,13 @@ func (c *Client) claim(id string) (Item, error) {
 	return it, err
 }
 
-func (c *Client) release(id string) (Item, error) {
+func (c *Client) release(id string, force bool) (Item, error) {
 	var it Item
-	err := c.do("POST", "/items/"+url.PathEscape(id)+"/release", &it)
+	path := "/items/" + url.PathEscape(id) + "/release"
+	if force {
+		path += "?force=true"
+	}
+	err := c.do("POST", path, &it)
 	return it, err
 }
 
@@ -118,6 +124,9 @@ func (c *Client) line(i Item) string {
 		h = i.Holder
 		if i.Holder == c.who() {
 			h += " (you)"
+			if !i.ExpiresAt.IsZero() {
+				h += " [lapses " + i.ExpiresAt.UTC().Format("15:04Z") + " unless you claim it again]"
+			}
 		}
 	}
 	return fmt.Sprintf("%s [%s] holder=%s  %s", i.ID, i.Status, h, i.Title)
@@ -135,7 +144,9 @@ func str(desc string) map[string]any { return map[string]any{"type": "string", "
 
 const instructions = "This is the team board: work items from several repos, each held by at most one " +
 	"person or agent. Before you start a task, claim it (board_claim or board_claim_next); if the " +
-	"claim is refused, someone else is on it, so pick other work. Release what you will not finish."
+	"claim is refused, someone else is on it, so pick other work. Release what you will not finish. " +
+	"A claim lapses after a while (the time is shown on your items): claim the item again to renew it " +
+	"while you are still working; if you stop, it frees itself."
 
 // Instructions is sent to the client at initialize time.
 func Instructions() string { return instructions }
@@ -232,8 +243,9 @@ func Tools(c *Client) []Tool {
 			},
 		},
 		{
-			Name:        "board_claim",
-			Description: "Claim a work item before starting it. Fails, naming the holder, if someone else already holds it — then pick other work.",
+			Name: "board_claim",
+			Description: "Claim a work item before starting it. Fails, naming the holder, if someone else already holds it — then pick other work. " +
+				"Claiming an item you already hold renews your claim (claims lapse after a while if not renewed).",
 			InputSchema: obj(map[string]any{"id": str("item id exactly as listed, e.g. billing-api/bd/billing-api-x1")}, "id"),
 			Handler: func(raw json.RawMessage) (string, bool) {
 				var a struct{ ID string }
@@ -249,16 +261,23 @@ func Tools(c *Client) []Tool {
 			},
 		},
 		{
-			Name:        "board_release",
-			Description: "Release an item you hold (done, or you will not finish it). Only the holder can release.",
-			InputSchema: obj(map[string]any{"id": str("item id exactly as listed")}, "id"),
+			Name: "board_release",
+			Description: "Release an item you hold (done, or you will not finish it). Only the holder can release, " +
+				"unless you are an administrator and pass force=true to free an item someone else holds (e.g. a crashed agent).",
+			InputSchema: obj(map[string]any{
+				"id":    str("item id exactly as listed"),
+				"force": map[string]any{"type": "boolean", "description": "administrators only: release an item held by someone else"},
+			}, "id"),
 			Handler: func(raw json.RawMessage) (string, bool) {
-				var a struct{ ID string }
+				var a struct {
+					ID    string
+					Force bool
+				}
 				_ = json.Unmarshal(raw, &a)
 				if a.ID == "" {
 					return "id is required", true
 				}
-				it, err := c.release(a.ID)
+				it, err := c.release(a.ID, a.Force)
 				if err != nil {
 					return fail(err)
 				}

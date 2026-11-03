@@ -65,3 +65,37 @@ func TestHTTPClientRejectsBadCAFile(t *testing.T) {
 		t.Errorf("garbage CA file: %v", err)
 	}
 }
+
+func TestForceReleaseAndLeaseShownToTheHolder(t *testing.T) {
+	h := startServer(t, 2)
+	agent := &Client{BaseURL: h.URL, Token: "bob-token"}
+	other := &Client{BaseURL: h.URL, Token: "alice-token"}
+	admin := &Client{BaseURL: h.URL, Token: "carol-token"} // carol is an administrator in startServer
+
+	txt, isErr := tool(t, agent, "board_claim", `{"id":"billing-api/bd/b-1"}`)
+	if isErr || !strings.Contains(txt, "(you)") || !strings.Contains(txt, "lapses") || !strings.Contains(txt, "claim it again") {
+		t.Fatalf("the holder should be told when its claim lapses and how to renew: %v %q", isErr, txt)
+	}
+	if txt, _ = tool(t, other, "board_items", `{"holder":"bob"}`); strings.Contains(txt, "lapses") {
+		t.Errorf("someone else's lease must not be shown as yours: %q", txt)
+	}
+	if txt, isErr = tool(t, agent, "board_claim", `{"id":"billing-api/bd/b-1"}`); isErr || !strings.Contains(txt, "lapses") {
+		t.Errorf("renewing by claiming again = %v %q", isErr, txt)
+	}
+	// non-admin cannot force
+	txt, isErr = tool(t, other, "board_release", `{"id":"billing-api/bd/b-1","force":true}`)
+	if !isErr || !strings.Contains(txt, "administrator") {
+		t.Errorf("non-admin force = %v %q, want an error mentioning administrators", isErr, txt)
+	}
+	// admin without force is treated like anyone
+	if txt, isErr = tool(t, admin, "board_release", `{"id":"billing-api/bd/b-1"}`); !isErr || !strings.Contains(txt, "bob") {
+		t.Errorf("admin releasing without force = %v %q, want refused naming bob", isErr, txt)
+	}
+	// admin with force frees it
+	if txt, isErr = tool(t, admin, "board_release", `{"id":"billing-api/bd/b-1","force":true}`); isErr || !strings.Contains(txt, "holder=-") {
+		t.Errorf("admin force = %v %q", isErr, txt)
+	}
+	if txt, _ = tool(t, other, "board_items", `{"holder":"none"}`); !strings.Contains(txt, "b-1") {
+		t.Errorf("the item should be free again: %q", txt)
+	}
+}

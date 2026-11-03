@@ -58,6 +58,7 @@ func newFixture(t *testing.T) *fixture {
 		Repos: []string{f.repoDir},
 		Members: []Member{
 			{Identity: "alice", Token: "alice-token"},
+			{Identity: "root", Token: "root-token", Admin: true},
 			{Identity: "bob", TokenSHA256: hex.EncodeToString(sum[:])},
 		},
 	}
