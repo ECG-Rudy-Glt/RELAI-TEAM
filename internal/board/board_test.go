@@ -24,6 +24,14 @@ func openBoard(t *testing.T, path string) (*Board, *store.Log) {
 	return New(l, past), l
 }
 
+func refs(ids ...string) []RepoRef {
+	var out []RepoRef
+	for _, id := range ids {
+		out = append(out, RepoRef{ID: id, Source: "/repos/" + id})
+	}
+	return out
+}
+
 func item(repo, id, title string) aggregate.Item {
 	return aggregate.Item{ID: repo + "/bd/" + id, Repo: repo, Kind: aggregate.KindTask, Title: title, Status: "open"}
 }
@@ -31,7 +39,7 @@ func item(repo, id, title string) aggregate.Item {
 func TestReplayRestoresHolder(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "events.jsonl")
 	b, l := openBoard(t, path)
-	if err := b.MergeAggregated([]string{"r"}, []aggregate.Item{item("r", "1", "Task one")}); err != nil {
+	if err := b.MergeAggregated(refs("r"), []aggregate.Item{item("r", "1", "Task one")}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := b.Claim("r/bd/1", "alice"); err != nil {
@@ -51,7 +59,7 @@ func TestReplayRestoresHolder(t *testing.T) {
 func TestConcurrentClaimsExactlyOneWins(t *testing.T) {
 	b, l := openBoard(t, filepath.Join(t.TempDir(), "events.jsonl"))
 	defer l.Close()
-	_ = b.MergeAggregated([]string{"r"}, []aggregate.Item{item("r", "1", "Contended")})
+	_ = b.MergeAggregated(refs("r"), []aggregate.Item{item("r", "1", "Contended")})
 
 	const n = 16
 	var wg sync.WaitGroup
@@ -91,7 +99,7 @@ func TestConcurrentClaimsExactlyOneWins(t *testing.T) {
 func TestReleaseRules(t *testing.T) {
 	b, l := openBoard(t, filepath.Join(t.TempDir(), "events.jsonl"))
 	defer l.Close()
-	_ = b.MergeAggregated([]string{"r"}, []aggregate.Item{item("r", "1", "T")})
+	_ = b.MergeAggregated(refs("r"), []aggregate.Item{item("r", "1", "T")})
 
 	var nh *NotHolderError
 	if _, err := b.Release("r/bd/1", "alice"); !errors.As(err, &nh) {
@@ -120,7 +128,7 @@ func TestReleaseRules(t *testing.T) {
 func TestMergeAggregated(t *testing.T) {
 	b, l := openBoard(t, filepath.Join(t.TempDir(), "events.jsonl"))
 	defer l.Close()
-	_ = b.MergeAggregated([]string{"a", "b"}, []aggregate.Item{
+	_ = b.MergeAggregated(refs("a", "b"), []aggregate.Item{
 		item("a", "1", "Keep me"),
 		item("a", "2", "Will close"),
 		item("b", "1", "In repo b"),
@@ -130,7 +138,7 @@ func TestMergeAggregated(t *testing.T) {
 	}
 
 	// Next round: a/1 renamed (still held), a/2 closed, a/3 new; repo b unreadable this round.
-	if err := b.MergeAggregated([]string{"a"}, []aggregate.Item{
+	if err := b.MergeAggregated(refs("a"), []aggregate.Item{
 		item("a", "1", "Keep me (renamed)"),
 		item("a", "3", "Brand new"),
 	}); err != nil {

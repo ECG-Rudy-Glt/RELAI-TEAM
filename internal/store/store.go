@@ -28,6 +28,7 @@ type Event struct {
 	Time     time.Time `json:"time"`
 	Type     string    `json:"type"`
 	Repo     string    `json:"repo,omitempty"`
+	Source   string    `json:"source,omitempty"` // repo_declared: the path or URL it is read from
 	ItemID   string    `json:"item_id,omitempty"`
 	Identity string    `json:"identity,omitempty"`
 	Title    string    `json:"title,omitempty"`

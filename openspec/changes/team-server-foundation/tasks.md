@@ -39,10 +39,10 @@
 
 ## 4. HTTP server (`internal/server`, `cmd/relai-server`)
 
-- [ ] 4.1 Add token-based identity: a config-loaded token → identity map and a middleware that
+- [x] 4.1 Add token-based identity: a config-loaded token → identity map and a middleware that
       rejects a request with no or an unrecognized `Bearer` token before it reaches any handler;
       verify with a test for: valid token, missing token, unknown token.
-- [ ] 4.2 Add `GET /repos`, `GET /items`, `POST /items/{id}/claim`, `POST /items/{id}/release`
+- [x] 4.2 Add `GET /repos`, `GET /items`, `POST /items/{id}/claim`, `POST /items/{id}/release`
       using `net/http`'s method+path `ServeMux` patterns, backed by the board (task 3); verify with
       `httptest` covering an unknown repo (spec scenario: reports "not tracked", not stale/fake
       data) and the claim/release round trip.

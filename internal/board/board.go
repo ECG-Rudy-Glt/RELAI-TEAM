@@ -44,17 +44,23 @@ type Appender interface {
 	Append(store.Event) (store.Event, error)
 }
 
+// RepoRef identifies a repo read in an aggregation round.
+type RepoRef struct {
+	ID     string
+	Source string
+}
+
 // Board is safe for concurrent use.
 type Board struct {
 	mu    sync.Mutex
 	log   Appender
-	repos map[string]bool
+	repos map[string]string // repo ID -> source it was last read from
 	items map[string]*Item
 }
 
 // New builds a board from past events, then records new ones through log.
 func New(log Appender, past []store.Event) *Board {
-	b := &Board{log: log, repos: map[string]bool{}, items: map[string]*Item{}}
+	b := &Board{log: log, repos: map[string]string{}, items: map[string]*Item{}}
 	for _, e := range past {
 		b.apply(e)
 	}
@@ -64,7 +70,7 @@ func New(log Appender, past []store.Event) *Board {
 func (b *Board) apply(e store.Event) {
 	switch e.Type {
 	case store.RepoDeclared:
-		b.repos[e.Repo] = true
+		b.repos[e.Repo] = e.Source
 	case store.ItemCreated, store.ItemUpdated:
 		it, ok := b.items[e.ItemID]
 		if !ok {
@@ -107,10 +113,21 @@ func (b *Board) Items() []Item {
 	return out
 }
 
+// Repos returns every repo the board has ever read, by ID, with the source it was read from.
+func (b *Board) Repos() map[string]string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	out := make(map[string]string, len(b.repos))
+	for id, src := range b.repos {
+		out[id] = src
+	}
+	return out
+}
+
 // RepoItems returns the items of one repo, and whether the board knows that repo at all.
 func (b *Board) RepoItems(repo string) ([]Item, bool) {
 	b.mu.Lock()
-	known := b.repos[repo]
+	_, known := b.repos[repo]
 	b.mu.Unlock()
 	if !known {
 		return nil, false
@@ -179,14 +196,14 @@ func (b *Board) Release(id, who string) (Item, error) {
 // is gone, e.g. a closed Beads task), while repos that could not be read keep their items — a
 // temporarily unreachable repo must not wipe the board. Holders of items that still exist are
 // never touched.
-func (b *Board) MergeAggregated(readRepos []string, items []aggregate.Item) error {
+func (b *Board) MergeAggregated(readRepos []RepoRef, items []aggregate.Item) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	read := map[string]bool{}
 	for _, r := range readRepos {
-		read[r] = true
-		if !b.repos[r] {
-			if err := b.record(store.Event{Type: store.RepoDeclared, Repo: r}); err != nil {
+		read[r.ID] = true
+		if src, ok := b.repos[r.ID]; !ok || src != r.Source {
+			if err := b.record(store.Event{Type: store.RepoDeclared, Repo: r.ID, Source: r.Source}); err != nil {
 				return err
 			}
 		}
