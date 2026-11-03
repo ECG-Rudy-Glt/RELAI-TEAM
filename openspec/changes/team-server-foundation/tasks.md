@@ -53,9 +53,9 @@
 
 ## 5. Packaging
 
-- [ ] 5.1 Add a multi-stage `Dockerfile` building a minimal `relai-server` image; verify with
+- [x] 5.1 Add a multi-stage `Dockerfile` building a minimal `relai-server` image; verify with
       `docker build` producing an image that runs `relai-server` and answers `GET /repos`.
-- [ ] 5.2 Add `docker-compose.yml` mounting a config directory (declared repos, identity tokens)
+- [x] 5.2 Add `docker-compose.yml` mounting a config directory (declared repos, identity tokens)
       and a data directory (the event log) as volumes, exposing the HTTP port; verify with
       `docker compose up` against the same fixture config as 4.3, confirming the board is reachable
       and state survives `docker compose restart`.
