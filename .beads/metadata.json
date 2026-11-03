@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "RELAI_TEAM",
+  "project_id": "e8726ceb-323b-44fe-b8ed-832a8865c910"
+}
