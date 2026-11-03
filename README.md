@@ -16,6 +16,12 @@ Relai itself stays git-only with no server, and never depends on this project.
                                                                   relai-mcp ◄── Claude Code, Codex, …
 ```
 
+![The relai-team web board: four columns, who holds what, live activity](docs/images/board.png)
+
+<sub>Ten seconds of a team working on six fictional projects. Dark mode follows your system:
+[`docs/images/board-dark.png`](docs/images/board-dark.png); filtered to one agent:
+[`docs/images/board-filtered.png`](docs/images/board-filtered.png).</sub>
+
 ## What you get
 
 - **One live board** over every declared repo, with a **web page** (`/board`) that updates the moment
@@ -24,7 +30,8 @@ Relai itself stays git-only with no server, and never depends on this project.
 - **Easy on your disk.** Unchanged repos cost nothing: no process is started and nothing is written
   (see "Why it does not poll Beads").
 - **Claim / release with a guarantee.** Exactly one claim wins when several agents ask at once; the
-  others are told who holds it.
+  others are told who holds it. Claims **lapse** after a lease (default 8 h) unless renewed, so a
+  crashed agent never blocks a task, and an administrator can free one by hand.
 - **Agent tools (MCP).** `relai-mcp` gives Claude Code, Codex and other MCP clients five tools to
   list, claim and release work, as their own identity.
 - **Claims survive restarts.** An append-only event log (`events.jsonl`), no database to run.
@@ -35,10 +42,50 @@ Relai itself stays git-only with no server, and never depends on this project.
 
 ## Quick start
 
-### With Docker
+You need `git`, plus `bd` ([Beads](https://github.com/steveyegge/beads)) and `openspec` for the parts you
+want shown. Then three commands:
+
+```sh
+go install github.com/ECG-Rudy-Glt/RELAI-TEAM/cmd/relai-server@latest   # or: go build ./cmd/relai-server
+
+relai-server init --scan ~/work          # finds your repos that have Beads / OpenSpec / relai.yaml
+relai-server -config ./config.json       # then open http://localhost:8080/board
+```
+
+`init` writes `config.json` (mode 0600) with one random token per member and prints the tokens **once**:
+only their hashes are stored. It refuses to overwrite an existing config.
+
+```text
+$ relai-server init --scan ~/work --members alice,agent-1,agent-2
+Wrote /home/you/config.json (6 repos, 3 members)
+
+Tokens. Shown once: the config keeps only their hashes. Give each person theirs.
+  alice            rt_a432…  (administrator)
+  agent-1          rt_29a2…
+  agent-2          rt_7be0…
+
+Next
+  1. relai-server -config /home/you/config.json
+  2. open http://localhost:8080/board and paste a token
+  3. for an agent:  claude mcp add relai-team -e RELAI_TEAM_URL=http://localhost:8080 -e RELAI_TEAM_TOKEN=rt_7be0… -- relai-mcp
+```
+
+Options: `--repos a,b` (paths or clone URLs) instead of or besides `--scan`, `--members`, `--listen`,
+`--dir`, `--force`. The first member is the administrator.
+
+**Nothing to try it on?** Make fictional projects first:
+
+```sh
+scripts/demo-repos.sh /tmp/demo           # six small repos with Beads tasks and OpenSpec changes
+relai-server init --scan /tmp/demo --dir /tmp/demo-board
+relai-server -config /tmp/demo-board/config.json
+```
+
+### With Docker (no Go, no bd, no openspec on your machine)
 
 ```sh
 mkdir -p config data
+# either `relai-server init`, or write the file by hand:
 cat > config/config.json <<'EOF2'
 {
   "listen": ":8080",
@@ -106,8 +153,8 @@ environment variables are `RELAI_TEAM_URL` and `RELAI_TEAM_TOKEN`. As a project 
 |---|---|
 | `board_repos` | Declared repos, item counts, which ones could not be read. |
 | `board_items` | Work items, filterable by `repo`, `status`, `holder` (`none`, `me`, or an identity). `(you)` marks your own. |
-| `board_claim` | Claim one item. If someone holds it, the answer names them: pick other work. |
-| `board_release` | Release an item you hold. Only the holder can. |
+| `board_claim` | Claim one item. If someone holds it, the answer names them: pick other work. Claiming your own item again renews it; your items show when their claim lapses. |
+| `board_release` | Release an item you hold. Administrators can pass `force` to free someone else's (a crashed agent's, say). |
 | `board_claim_next` | Claim the first unclaimed, non-blocked item (optionally in one repo). Safe when many agents ask at once. |
 
 Refusals come back as ordinary tool results, not crashes, so an agent just moves on.
@@ -123,12 +170,15 @@ and the two that ran out were told so cleanly.
 |---|---|---|
 | `listen` | `:8080` | Address to listen on. |
 | `data_dir` | `data` | Holds `events.jsonl`. |
+| `claim_lease` | `8h` | How long a claim lasts unless its holder claims again to renew it. `0s`: claims never lapse. |
+| `git_credentials` | — | For private repos declared by clone URL: `[{"host":"github.com","token_env":"GITHUB_TOKEN"}]`. The token is read from that environment variable, never from this file. Optional `username` (default `x-access-token`; GitLab wants `oauth2`). See "Private repos". |
+| `git_ssh_key`, `git_known_hosts` | — | Private key (and optionally a `known_hosts` file to verify against) for `git@…` / `ssh://` remotes. |
 | `refresh_interval` | `30s` | How often repos are *checked* for changes (Go duration, at least 1s). Checking is cheap; only changed repos are read. |
 | `full_refresh_interval` | `6h` | Longest an *unchanged* repo is trusted before being read again anyway (safety net). `0s` reads every repo every cycle: expensive, see below. |
 | `refresh_concurrency` | `8` | How many changed repos are read at once. |
 | `tls_cert`, `tls_key` | — | PEM files; set both to serve HTTPS (TLS 1.2+), or neither. |
 | `repos` | — | Local paths or clone URLs. A clone URL is only cloned when its remote HEAD moved. |
-| `members` | — | `{"identity", "token"}` or `{"identity", "token_sha256"}` (hex SHA-256, so the file holds no plaintext secret). |
+| `members` | — | `{"identity", "token"}` or `{"identity", "token_sha256"}` (hex SHA-256, so the file holds no plaintext secret), and `"admin": true` to let that member force-release others' items. |
 
 Config is read at startup; restart to change members or repos.
 
@@ -143,13 +193,56 @@ All routes except `/healthz` need `Authorization: Bearer <token>`.
 | `GET /repos` | Declared repos with `readable`, `items`, `notes`. |
 | `GET /repos/{repo}/items` | Items of one repo; `404 repo not tracked` if undeclared. |
 | `GET /items`, `GET /items/{id}` | Work items with `holder` and `claimed_at`. |
-| `POST /items/{id}/claim` | `200` with you as holder; `409` + current holder if taken. |
-| `POST /items/{id}/release` | `200`; `409` if someone else holds it. |
+| `POST /items/{id}/claim` | `200` with you as holder and `expires_at`; `409` + current holder if taken. Claiming an item you already hold **renews** it. |
+| `POST /items/{id}/release` | `200`; `409` if someone else holds it. Add `?force=true` as an administrator to free an item someone else holds (`403` for anyone else; the log records who did it). |
 | `GET /events` | Server-Sent Events stream: one `change` event whenever the board changes (no board data in it: re-fetch `/items`). |
 | `GET /board` | The web board (public, no data in the page). |
 
 Item IDs contain slashes (`auth-service/bd/auth-service-0p2`): **URL-encode them** in the path
 (`auth-service%2Fbd%2Fauth-service-0p2`), or you get a 404. (`relai-mcp` does this for you.)
+
+## Claims, leases and force-release
+
+A claim lasts `claim_lease` (default 8 h) from the moment it was made. While it lasts the item shows
+who holds it and when it lapses; after that it counts as unclaimed and anyone can take it. The holder
+renews by **claiming the item again** (agents are told this by the tool text). So a crashed or closed
+agent frees its tasks by itself, with no clean-up job: the lapse is computed when the board is read,
+from the time already in the event log, which makes it identical after a restart.
+
+An administrator (`"admin": true` on the member; `init` makes the first member one) can free an
+item held by someone else with `board_release … force` or `POST …/release?force=true`. Nobody else
+can, and an administrator who does not ask for `force` is treated like any member. The log keeps both
+names (the former holder and who freed it).
+
+## Private repos
+
+Repos declared by clone URL can be private. Tell the server how to authenticate per host, and keep the
+secret itself in the environment:
+
+```json
+{
+  "repos": ["https://github.com/acme/billing-api.git", "git@github.com:acme/infra.git"],
+  "git_credentials": [{ "host": "github.com", "token_env": "GITHUB_TOKEN" }],
+  "git_ssh_key": "/run/secrets/id_ed25519",
+  "git_known_hosts": "/run/secrets/known_hosts"
+}
+```
+
+```sh
+GITHUB_TOKEN=ghp_… relai-server -config config.json       # Docker: put it in config/secrets.env
+```
+
+- The token is sent only over **HTTPS**, as a request header scoped to that exact host: never in a URL,
+  a command line, a log or an API answer. A repo URL that contains a password or token
+  (`https://user:pw@…`) is refused at startup, since the URL is shown to every member.
+- For GitHub use a fine-grained token with read access to *Contents*; for GitLab set `"username": "oauth2"`.
+- git never waits for a person: a missing or wrong credential fails at once and `/repos` says why
+  (`authentication required for github.com: no credential configured`, `authentication refused … check
+  the token in $GITHUB_TOKEN`), without ever printing the token.
+- Without `git_known_hosts`, SSH accepts a host's key the first time it sees it (weaker); with it, keys
+  are verified strictly.
+- A private repo is cloned only when its remote HEAD moved (`git ls-remote`, no disk writes), like the
+  rest of the change-driven refresh.
 
 ## HTTPS
 
@@ -188,13 +281,10 @@ Setting `full_refresh_interval` to `0s` turns all of this off. Do not leave it o
 
 ## Know before you deploy
 
-- **No claim expiry.** If an agent crashes while holding a task, the task stays held until that same
-  identity releases it. There is no admin override yet.
 - **Claims live in the server's log, not in Beads.** A `bd update --claim` done by hand is not seen
   as a claim on the board.
 - **Single instance.** State is held in memory and one log file; do not run two servers on one log.
-- **Private clone URLs** need git credentials the server does not manage (clone URLs themselves are
-  tested against local `file://` remotes).
+- **Static tokens.** Git tokens and member tokens do not rotate by themselves: change them and restart.
 - **The web board is read-only**, and protected by the same tokens: use HTTPS for anything beyond a
   private network.
 - **First read cost.** Starting the server reads every repo once (about 2.5 s for ten repos on four
@@ -203,7 +293,8 @@ Setting `full_refresh_interval` to `0s` turns all of this off. Do not leave it o
 ## Status
 
 v0.x. Done: aggregation (parallel, change-driven), claims, persistence, token auth, HTTP API, event
-stream, web board, HTTPS, Docker packaging, MCP tools.
+stream, web board, HTTPS, claim leases and force-release, private repos, `init`, Docker packaging,
+MCP tools.
 Not started: deployment presets (deliberately deferred — see `.relai/notes.md`).
 Specs and history live in `openspec/` (`specs/` for what is true now, `changes/archive/` for how it
 got there); open tasks are in Beads (`bd ready`).

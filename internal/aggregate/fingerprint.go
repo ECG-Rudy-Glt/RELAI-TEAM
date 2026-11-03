@@ -50,7 +50,7 @@ func (a *Aggregator) store(src, fp string, r Repo) {
 func (a *Aggregator) fingerprint(src string) (string, bool) {
 	if cloneURL.MatchString(src) {
 		// ls-remote talks to the remote and writes nothing to disk, unlike a clone.
-		out, err := a.Run("", "git", "ls-remote", src, "HEAD")
+		out, err := a.runNet(src, "ls-remote", src, "HEAD")
 		if err != nil || strings.TrimSpace(string(out)) == "" {
 			return "", false
 		}

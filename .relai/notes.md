@@ -13,6 +13,10 @@
 - 2026-11-03 — Web board is a static page at `/board` that holds no data and takes a pasted token (sessionStorage), live over SSE (`/events`, fetch-streaming so it can send the Authorization header); read-only on purpose.
 - 2026-11-03 — TLS is in-process and optional (`tls_cert`/`tls_key`); plain HTTP beyond loopback only logs a warning, so private-network setups keep working.
 
+- 2026-11-03 — Claims are leased (default 8 h, `claim_lease`; `0s` = never): expiry is computed when read from the claim event's time, not scheduled, so it is the same after a restart; the holder renews by claiming again; admins (`admin: true`, first member from `init`) force-release with `?force=true`, logged as `by`. Default chosen so a dead agent frees a task within a working day.
+- 2026-11-03 — Private clone URLs: tokens come from an environment variable named in `git_credentials[].token_env` (never in the config), sent only over HTTPS as a URL-scoped `http.<url>.extraHeader` via `GIT_CONFIG_*` env (not in argv, not in the URL, not in the clone's remote); git always runs with prompts off so it fails fast; URLs with userinfo are refused at startup because the source is shown to every member.
+- 2026-11-03 — `relai-server init` (+ `internal/initcfg`) writes config with random tokens, stores only SHA-256, refuses to overwrite; `scripts/demo-repos.sh` makes fictional projects; `scripts/screenshots.js` retakes the README images.
+
 ### Pitfalls
 <!-- Things that cost time once and will again: symptom → cause → what to do. -->
 - `bd init` may make its own commit and touch `.gitignore` → use `--skip-agents --skip-hooks`, then `git reset --soft HEAD~1` and recommit cleanly if it does.
@@ -31,9 +35,12 @@
 - Idle server, refresh 2 s, 30 s window: 9.5 MB/s before the cache -> at the machine's noise floor (26 vs 32 KiB/s with no server at all) after.
 - A real `bd update` is visible in 1.8 s with one repo re-read.
 
+- `git http-backend` is a real, scriptable git server for tests: serve it with `net/http/cgi` behind a Basic-auth wrapper (see `internal/aggregate/gitauth_test.go`), `t.Setenv("GIT_SSL_CAINFO", ca)` so git trusts an `httptest` TLS cert. It proved a wrong token makes git retry a prompt, which looks like "no credential" unless the code knows one was configured.
+- A rebuilt `relai-mcp` is needed after changing the tools: a stale binary in /tmp gave "force not honoured" in a manual run while the tests passed.
+
 ### Next session
 - 2026-11-03 — `team-server-foundation` and `mcp-team-interface` done, archived, verified (unit + race tests, real stdio session, 3 real Claude Code agents: 3+1+2 of 6 items, no duplicate).
-- Known gaps, in priority order: claim expiry / admin force-release (a crashed agent keeps its item), HTTPS guidance (reverse proxy), parallel repo reads (refresh ≈ 1 s per repo), a built-in web board (`GET /board`), clone-URL repos untested, claims not mirrored to Beads assignee.
+- Known gaps: claims are not mirrored to Beads assignee; no token rotation (restart to change tokens); the web board is read-only; no UI for admins to force-release (API/MCP only); `deployment-presets` deferred.
 - `deployment-presets` stays deferred until someone states the requirements (see Decisions).
 - Use Go 1.23 (/opt/go1.23/bin): system Go 1.19 lacks method+path ServeMux patterns.
 - Docker pitfalls: `bd` writes lock files even to read, so repos are mounted read-write and the container runs as the repos' owner (RELAI_TEAM_UID/GID); a root run leaves a root-owned `data/events.jsonl` that the non-root container can't open. Item IDs contain `/`: URL-encode them in paths.

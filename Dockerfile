@@ -7,12 +7,12 @@ COPY internal ./internal
 ARG VERSION=dev
 RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /out/relai-server ./cmd/relai-server
 
-# Runtime needs git (every repo is checked with it) plus the two CLIs the aggregator reads
+# Runtime needs git (every repo is checked with it; openssh-client for git@ / ssh:// remotes) plus the two CLIs the aggregator reads
 # through: bd (Beads) and openspec. Without them a repo still shows up, with a note saying
 # which part could not be read.
 FROM node:22-bookworm-slim
 RUN apt-get update \
- && apt-get install -y --no-install-recommends git ca-certificates \
+ && apt-get install -y --no-install-recommends git ca-certificates openssh-client \
  && rm -rf /var/lib/apt/lists/* \
  && npm install -g @beads/bd @fission-ai/openspec \
  && npm cache clean --force \

@@ -89,6 +89,9 @@ type Aggregator struct {
 	Run Runner
 	// FullRefresh is the longest an unchanged repo is trusted (0 means DefaultFullRefresh).
 	FullRefresh time.Duration
+	// Git says how to authenticate to private remotes; RunEnv runs git with that environment.
+	Git    GitAuth
+	RunEnv EnvRunner
 	// NoCache reads every repo on every call. Only for debugging: it is the expensive mode.
 	NoCache bool
 
@@ -102,7 +105,7 @@ type Aggregator struct {
 }
 
 // New returns an Aggregator that runs real commands.
-func New() *Aggregator { return &Aggregator{Run: ExecRunner} }
+func New() *Aggregator { return &Aggregator{Run: ExecRunner, RunEnv: ExecRunnerEnv} }
 
 // All reads every source (local path or clone URL), returning what it could read and what it had
 // to skip, in the order the sources were declared. Sources are read concurrently (see Workers), so
@@ -370,7 +373,7 @@ func (a *Aggregator) fetch(src string) (string, func(), error) {
 	if err != nil {
 		return "", func() {}, err
 	}
-	if _, err := a.Run("", "git", "clone", "--depth", "1", "--quiet", src, tmp); err != nil {
+	if _, err := a.runNet(src, "clone", "--depth", "1", "--quiet", src, tmp); err != nil {
 		os.RemoveAll(tmp)
 		return "", func() {}, fmt.Errorf("clone %s: %w", src, err)
 	}

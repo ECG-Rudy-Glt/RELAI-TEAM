@@ -29,6 +29,7 @@ var version = "dev" // set at build time: -ldflags "-X main.version=v0.1.0"
 const usage = `relai-server — a live board for a team working across Relai repos
 
 Usage:
+  relai-server init [--scan <folder> | --repos a,b]   create config.json with member tokens (see "init -h")
   relai-server [-config <path>]     run the server (default config: $RELAI_TEAM_CONFIG or config.json)
   relai-server hash-token <token>   print the SHA-256 to put in a member's "token_sha256"
   relai-server version
@@ -47,6 +48,16 @@ func main() {
 			}
 			sum := sha256.Sum256([]byte(os.Args[2]))
 			fmt.Println(hex.EncodeToString(sum[:]))
+			return
+		case "init":
+			if len(os.Args) > 2 && (os.Args[2] == "-h" || os.Args[2] == "--help") {
+				fmt.Print(initUsage)
+				return
+			}
+			if err := runInit(os.Args[2:], os.Stdout); err != nil {
+				fmt.Fprintln(os.Stderr, "relai-server init:", err)
+				os.Exit(1)
+			}
 			return
 		case "help", "-h", "--help":
 			fmt.Print(usage)
@@ -87,6 +98,9 @@ func run(cfgPath string) error {
 	defer events.Close()
 
 	agg := aggregate.New()
+	if agg.Git, err = cfg.GitAuth(); err != nil {
+		return err
+	}
 	agg.Workers = cfg.RefreshConcurrency
 	agg.FullRefresh = cfg.FullRefresh()
 	agg.NoCache = cfg.FullRefresh() == 0

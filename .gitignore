@@ -10,3 +10,5 @@
 
 # server runtime data
 /data/
+config/secrets.env
+*.pem

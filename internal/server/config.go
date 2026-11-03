@@ -6,8 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/ECG-Rudy-Glt/RELAI-TEAM/internal/aggregate"
 	"net"
+	"net/url"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -18,6 +21,13 @@ type Config struct {
 	RefreshInterval string   `json:"refresh_interval"` // default "30s"
 	Repos           []string `json:"repos"`            // local paths or clone URLs
 	Members         []Member `json:"members"`
+	// GitCredentials, GitSSHKey and GitKnownHosts let repos declared by clone URL be private.
+	GitCredentials []GitCredentialConfig `json:"git_credentials"`
+	GitSSHKey      string                `json:"git_ssh_key"`
+	GitKnownHosts  string                `json:"git_known_hosts"`
+	// ClaimLease is how long a claim lasts unless its holder renews it by claiming again
+	// (default "8h"). "0s" means claims never lapse.
+	ClaimLease string `json:"claim_lease"`
 	// FullRefreshInterval is the longest an unchanged repo is trusted before being read again
 	// anyway (default "6h"). Repos are otherwise only read when their files change, because each
 	// read runs bd, which rewrites its database. "0s" reads every repo every cycle (expensive).
@@ -29,12 +39,22 @@ type Config struct {
 	TLSKey  string `json:"tls_key"`
 }
 
+// GitCredentialConfig lets the server read a private repo over HTTPS. The token itself never goes
+// in the config file: TokenEnv names the environment variable that holds it.
+type GitCredentialConfig struct {
+	Host     string `json:"host"`               // "github.com" (or "host:port")
+	Username string `json:"username,omitempty"` // default "x-access-token"; GitLab wants "oauth2"
+	TokenEnv string `json:"token_env"`
+}
+
 // Member is one identity of the declared team. Give either the token itself or its SHA-256 (hex),
 // so the config file need not hold plaintext secrets.
 type Member struct {
 	Identity    string `json:"identity"`
 	Token       string `json:"token,omitempty"`
 	TokenSHA256 string `json:"token_sha256,omitempty"`
+	// Admin lets this member force-release items held by others (explicitly, with ?force=true).
+	Admin bool `json:"admin,omitempty"`
 }
 
 // LoadConfig reads and validates a config file, filling defaults.
@@ -63,6 +83,20 @@ func LoadConfig(path string) (Config, error) {
 		}
 		return Config{}, fmt.Errorf("%s: tls_cert and tls_key go together: %s is missing", path, missing)
 	}
+	for _, src := range c.Repos {
+		if u, err := url.Parse(src); err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.User != nil {
+			return Config{}, fmt.Errorf("%s: repo %q contains credentials in its URL, which would be shown to every member: remove them and use git_credentials", path, u.Host)
+		}
+	}
+	if _, err := c.GitAuth(); err != nil {
+		return Config{}, fmt.Errorf("%s: %w", path, err)
+	}
+	if c.ClaimLease == "" {
+		c.ClaimLease = "8h"
+	}
+	if d, err := time.ParseDuration(c.ClaimLease); err != nil || d < 0 {
+		return Config{}, fmt.Errorf("%s: claim_lease must be a duration like 8h, or 0s for claims that never lapse", path)
+	}
 	if c.FullRefreshInterval == "" {
 		c.FullRefreshInterval = "6h"
 	}
@@ -79,6 +113,34 @@ func LoadConfig(path string) (Config, error) {
 		return Config{}, fmt.Errorf("%s: %w", path, err)
 	}
 	return c, nil
+}
+
+// GitAuth resolves the git credentials, reading each token from its environment variable. An
+// empty variable is an error here, at startup, rather than an unreadable repo later.
+func (c Config) GitAuth() (aggregate.GitAuth, error) {
+	g := aggregate.GitAuth{SSHKey: c.GitSSHKey, KnownHosts: c.GitKnownHosts}
+	for _, p := range []string{c.GitSSHKey, c.GitKnownHosts} {
+		if strings.ContainsAny(p, "'\n") {
+			return g, errors.New("git_ssh_key and git_known_hosts must not contain quotes or newlines")
+		}
+	}
+	for i, gc := range c.GitCredentials {
+		if gc.Host == "" || gc.TokenEnv == "" {
+			return g, fmt.Errorf("git_credentials[%d]: host and token_env are required", i)
+		}
+		tok := strings.TrimSpace(os.Getenv(gc.TokenEnv))
+		if tok == "" {
+			return g, fmt.Errorf("git_credentials[%d] (%s): environment variable %s is empty or not set", i, gc.Host, gc.TokenEnv)
+		}
+		g.Credentials = append(g.Credentials, aggregate.GitCredential{Host: gc.Host, Username: gc.Username, Token: tok, TokenEnv: gc.TokenEnv})
+	}
+	return g, nil
+}
+
+// ClaimLeaseDuration parses ClaimLease (0, also for an unset value, means claims never lapse).
+func (c Config) ClaimLeaseDuration() time.Duration {
+	d, _ := time.ParseDuration(c.ClaimLease)
+	return d
 }
 
 // FullRefresh parses FullRefreshInterval (0 means always read).
