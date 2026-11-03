@@ -290,6 +290,22 @@ Setting `full_refresh_interval` to `0s` turns all of this off. Do not leave it o
 - **First read cost.** Starting the server reads every repo once (about 2.5 s for ten repos on four
   cores, in parallel); after that, only changes.
 
+## Security
+
+relai-team holds your team's board and the tokens that identify its members, and it runs `git`, `bd` and
+`openspec` inside the repos you declare. In short:
+
+- Every route except `/healthz`, `/board` and `/` needs a member token. `relai-server init` stores only the
+  hashes. There is **no rate limiting and no token rotation** yet.
+- **Use HTTPS** (`tls_cert`/`tls_key`, or a TLS proxy) for anything beyond a private network. Plain HTTP
+  sends tokens in clear, and the server warns at startup when it listens beyond loopback.
+- Declared repos are trusted input, and **task titles are untrusted text that reaches AI agents** (through
+  MCP and the board): treat them as data, never as instructions.
+- Give each person and each agent its own member; keep administrators to a minimum.
+
+The full model, what is and is not protected, a hardening checklist, and how to report a vulnerability
+privately are in **[SECURITY.md](SECURITY.md)**. Please do not open a public issue for a security problem.
+
 ## Status
 
 v0.x. Done: aggregation (parallel, change-driven), claims, persistence, token auth, HTTP API, event
@@ -307,16 +323,24 @@ repo contract (`relai.yaml`, Beads, OpenSpec) through their own CLIs and files, 
 coupling back. And it lets this idea succeed or fail on its own without touching Relai's
 credibility. Details: `openspec/changes/archive/*-team-server-foundation/proposal.md`.
 
-## Contributing / picking up work
+## Contributing
 
-This repo uses Relai on itself. Start here:
+Contributions are welcome, from people and from AI agents, under the same rules. **[CONTRIBUTING.md](CONTRIBUTING.md)**
+has the details; the short version:
 
 ```sh
-relai handoff     # or: bd ready, if relai isn't installed — see AGENTS.md
+git clone https://github.com/ECG-Rudy-Glt/RELAI-TEAM && cd RELAI-TEAM
+bd bootstrap --yes          # a fresh clone has no tasks until this loads .beads/issues.jsonl (needs bd)
+go test -race ./...         # also before each PR: gofmt -l . (empty) and go vet ./...
+bd ready                    # what is unblocked; scripts/sync-beads.sh after changing tasks
 ```
 
-Pick an unblocked task, do the work, commit (conventional style), update `.relai/notes.md` for
-whoever picks this up next. Before committing: `gofmt -l .` (empty), `go vet ./...`, `go test ./...`.
+- Bugs and ideas: open an issue (security problems: see above). Docs that disagree with the behaviour are bugs.
+- Bigger changes start as an OpenSpec change under `openspec/changes/`; small fixes do not need one.
+- Conventional commits, no co-author trailers, tests with the change, README kept true.
+- **Never poll `bd` on a timer**: each run rewrites ~3 MiB on disk (the reason the server fingerprints repos).
+- Using Claude Code? `CLAUDE.md` and a session-start hook load the project's state automatically; other
+  agents start from `AGENTS.md`.
 
 ## Licence
 
