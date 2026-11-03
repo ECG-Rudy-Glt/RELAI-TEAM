@@ -1,0 +1,20 @@
+services:
+  relai-team:
+    build: .
+    image: relai-team:dev
+    restart: unless-stopped
+    # Run as the user that owns the repos: bd (Beads) writes lock files even to read, and a root
+    # container would leave root-owned files in them. Defaults to the first host user (1000).
+    user: "${RELAI_TEAM_UID:-1000}:${RELAI_TEAM_GID:-1000}"
+    environment:
+      HOME: /tmp
+    ports:
+      - "${RELAI_TEAM_PORT:-8080}:8080"
+    volumes:
+      # config.json: listen, repos, members (see README). Read-only.
+      - ./config:/config:ro
+      # Event log (events.jsonl): claims survive restarts. Set data_dir to /data in config.json.
+      - ./data:/data
+      # Repos declared by local path in config.json must be visible at the same path in the container.
+      # Writable on purpose: bd (Beads) needs to write lock files in .beads/ even for a read.
+      - ${RELAI_TEAM_REPOS:-./repos}:/repos
