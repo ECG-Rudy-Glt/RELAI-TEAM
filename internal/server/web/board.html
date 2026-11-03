@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>relai-team board</title>
+<style>
+:root{
+  --bg:#f4f5f7; --panel:#ffffff; --line:#e3e6eb; --text:#1b1f27; --muted:#6a7280;
+  --open:#6a7280; --claimed:#7a4fd6; --prog:#1f7ae0; --blocked:#d5483a; --ok:#1f9d63; --warn:#c77d00;
+  --flash:#fff3b0;
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#12151b; --panel:#1b2029; --line:#2a313d; --text:#e8ebf0; --muted:#95a0b2; --flash:#4a4310;
+}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+header{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;padding:12px 20px;background:var(--panel);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}
+h1{font-size:16px;margin:0;font-weight:650}
+.pill{display:inline-flex;align-items:center;gap:6px;padding:2px 9px;border-radius:99px;border:1px solid var(--line);font-size:12px;color:var(--muted);background:var(--panel)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--ok)}
+.dot.poll{background:var(--warn)} .dot.bad{background:var(--blocked)}
+.spacer{flex:1}
+button{font:inherit;cursor:pointer;border:1px solid var(--line);background:var(--panel);color:var(--text);border-radius:8px;padding:5px 12px}
+button.primary{background:var(--text);color:var(--bg);border-color:var(--text)}
+.filters{display:flex;flex-wrap:wrap;gap:6px;padding:10px 20px 0}
+.chip{cursor:pointer;user-select:none;padding:3px 10px;border-radius:99px;border:1px solid var(--line);background:var(--panel);font-size:12px;color:var(--muted)}
+.chip.on{background:var(--text);color:var(--bg);border-color:var(--text)}
+main{display:grid;grid-template-columns:1fr 300px;gap:16px;padding:14px 20px 30px}
+@media(max-width:1100px){main{grid-template-columns:1fr}}
+.cols{display:grid;grid-template-columns:repeat(4,minmax(220px,1fr));gap:12px;align-items:start;overflow-x:auto}
+.col{background:color-mix(in srgb,var(--panel) 55%,var(--bg));border:1px solid var(--line);border-radius:10px;padding:10px;min-height:120px}
+.col h2{display:flex;justify-content:space-between;align-items:center;margin:0 0 10px;font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.col h2 b{color:var(--text);font-size:13px}
+.col h2 span.t::before{content:"";width:10px;height:10px;border-radius:3px;background:var(--c);margin-right:7px;display:inline-block}
+.card{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--c);border-radius:8px;padding:9px 10px;margin-bottom:8px;transition:background .8s}
+.card.flash{background:var(--flash);transition:none}
+.card .ti{font-weight:560;margin-bottom:6px;word-break:break-word}
+.card .meta{display:flex;flex-wrap:wrap;gap:6px;align-items:center;font-size:11.5px;color:var(--muted)}
+.repo{padding:1px 7px;border-radius:5px;font-weight:600;color:#fff;font-size:11px}
+.kind{font-family:ui-monospace,monospace}
+.who{margin-left:auto;display:inline-flex;align-items:center;gap:5px;font-weight:600;color:var(--text)}
+.av{width:18px;height:18px;border-radius:50%;display:inline-grid;place-items:center;color:#fff;font-size:10px;font-weight:700}
+aside{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px;height:fit-content;position:sticky;top:64px}
+aside h3{margin:0 0 8px;font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+#feed{max-height:44vh;overflow:auto;margin:0 0 14px;padding:0;list-style:none}
+#feed li{padding:5px 0;border-bottom:1px dashed var(--line);font-size:12.5px}
+#feed time{color:var(--muted);font-family:ui-monospace,monospace;font-size:11px;margin-right:6px}
+.repos{display:grid;gap:4px;font-size:12.5px}
+.repos div{display:flex;justify-content:space-between;gap:8px}
+.repos .bad{color:var(--blocked)}
+.empty{color:var(--muted);font-size:12px;padding:6px 2px}
+#login{position:fixed;inset:0;display:grid;place-items:center;background:var(--bg);z-index:10}
+#login form{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:24px;width:min(380px,92vw);display:grid;gap:12px}
+#login h2{margin:0;font-size:17px}
+#login p{margin:0;color:var(--muted);font-size:13px}
+#login input{font:inherit;padding:8px 10px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--text);width:100%}
+#loginerr{color:var(--blocked);font-size:13px;min-height:1em}
+.hidden{display:none!important}
+</style>
+</head>
+<body>
+<div id="login">
+  <form id="loginform" autocomplete="off">
+    <h2>relai-team board</h2>
+    <p>Enter your team token. It stays in this tab only and is forgotten when you close it.</p>
+    <input id="tok" type="password" placeholder="token" autocomplete="off" autofocus>
+    <div id="loginerr"></div>
+    <button class="primary" type="submit">Open board</button>
+  </form>
+</div>
+
+<header>
+  <h1>relai-team · board</h1>
+  <span class="pill"><span class="dot" id="conn"></span><span id="connt">connecting…</span></span>
+  <span class="pill" id="count">–</span>
+  <span class="pill" id="rp">–</span>
+  <span class="spacer"></span>
+  <span class="pill" id="me">–</span>
+  <button id="signout">Sign out</button>
+</header>
+<div class="filters" id="filters"></div>
+<main>
+  <div class="cols" id="cols"></div>
+  <aside>
+    <h3>Activity</h3>
+    <ul id="feed"><li class="empty">Changes will appear here as they happen.</li></ul>
+    <h3>Repos</h3>
+    <div class="repos" id="repos"></div>
+  </aside>
+</main>
+
+<script>
+"use strict";
+const COLS=[
+  {k:"blocked",t:"Blocked",c:"var(--blocked)"},
+  {k:"prog",t:"In progress",c:"var(--prog)"},
+  {k:"claimed",t:"Claimed",c:"var(--claimed)"},
+  {k:"open",t:"Open",c:"var(--open)"}];
+const PALETTE=["#2f6fed","#c2410c","#0f766e","#9333ea","#b45309","#be123c","#4d7c0f","#0369a1","#a21caf","#475569","#15803d"];
+const hash=s=>[...s].reduce((a,c)=>(a*31+c.charCodeAt(0))>>>0,7);
+const color=s=>PALETTE[hash(s)%PALETTE.length];
+const colOf=i=>i.status==="blocked"?"blocked":i.status==="in_progress"?"prog":i.holder?"claimed":"open";
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const $=id=>document.getElementById(id);
+
+let token=null, items=[], repos=[], prev=null, flashIds=new Set();
+let filterRepo=null, filterWho=null, feed=[], me="";
+
+function store(){try{return window.sessionStorage}catch(e){return null}}
+function saveToken(t){const s=store();if(s){t?s.setItem("relai-token",t):s.removeItem("relai-token")}}
+function loadToken(){const s=store();return s?s.getItem("relai-token"):null}
+
+async function api(path,opts){
+  const r=await fetch(path,Object.assign({headers:{"Authorization":"Bearer "+token},cache:"no-store"},opts));
+  if(r.status===401){const e=new Error("unauthorized");e.auth=true;throw e}
+  if(!r.ok)throw new Error("HTTP "+r.status);
+  return r.json();
+}
+
+function setConn(kind,text){
+  $("conn").className="dot"+(kind==="live"?"":kind==="poll"?" poll":" bad");
+  $("connt").textContent=text;
+}
+
+function note(who,msg){
+  feed.unshift({t:new Date(),who,msg}); feed=feed.slice(0,60); renderFeed();
+}
+function renderFeed(){
+  $("feed").innerHTML=feed.length?feed.map(e=>`<li><time>${e.t.toLocaleTimeString()}</time><b style="color:${color(e.who)}">${esc(e.who)}</b> ${esc(e.msg)}</li>`).join(""):`<li class="empty">Changes will appear here as they happen.</li>`;
+}
+const short=i=>i.repo+": "+(i.title.length>46?i.title.slice(0,46)+"…":i.title);
+
+function diff(oldItems,newItems){
+  const o=new Map(oldItems.map(i=>[i.id,i])), n=new Map(newItems.map(i=>[i.id,i]));
+  flashIds=new Set();
+  for(const [id,i] of n){
+    const p=o.get(id);
+    if(!p){flashIds.add(id);note("board","new: "+short(i));continue}
+    if(p.holder!==i.holder){
+      flashIds.add(id);
+      if(i.holder)note(i.holder,"claimed «"+short(i)+"»");
+      else note(p.holder,"released «"+short(i)+"»");
+    } else if(p.status!==i.status){flashIds.add(id);note("board",short(i)+" is now "+i.status.replace("_"," "))}
+  }
+  for(const [id,i] of o)if(!n.has(id))note(i.holder||"board","«"+short(i)+"» is gone (done or removed)");
+}
+
+function render(){
+  const vis=items.filter(i=>(!filterRepo||i.repo===filterRepo)&&(!filterWho||(filterWho==="(unclaimed)"?!i.holder:i.holder===filterWho)));
+  $("cols").innerHTML=COLS.map(c=>{
+    const list=vis.filter(i=>colOf(i)===c.k).sort((a,b)=>a.repo.localeCompare(b.repo)||a.title.localeCompare(b.title));
+    return `<section class="col" style="--c:${c.c}"><h2><span class="t">${c.t}</span><b>${list.length}</b></h2>`+
+      (list.map(i=>`<div class="card${flashIds.has(i.id)?" flash":""}" style="--c:${c.c}" title="${esc(i.id)}">
+        <div class="ti">${esc(i.title)}</div>
+        <div class="meta"><span class="repo" style="background:${color(i.repo)}">${esc(i.repo)}</span>
+        <span class="kind">${i.kind==="beads-task"?"bd":"spec"}</span>
+        ${i.holder?`<span class="who"><span class="av" style="background:${color(i.holder)}">${esc(i.holder[0].toUpperCase())}</span>${esc(i.holder)}${i.holder===me?" (you)":""}</span>`:""}</div></div>`).join("")||`<div class="empty">nothing here</div>`)+`</section>`;
+  }).join("");
+  const holders=["(unclaimed)",...new Set(items.map(i=>i.holder).filter(Boolean))].sort();
+  const chip=(label,on,f,v)=>`<span class="chip${on?" on":""}" data-f="${f}" data-v="${esc(v)}">${esc(label)}</span>`;
+  $("filters").innerHTML=chip("all",!filterRepo&&!filterWho,"all","")+
+    repos.filter(r=>r.readable&&r.id).map(r=>chip(r.id,filterRepo===r.id,"repo",r.id)).join("")+
+    holders.map(h=>chip("@ "+h,filterWho===h,"who",h)).join("");
+  $("count").textContent=items.length+" items · "+items.filter(i=>i.holder).length+" claimed";
+  $("rp").textContent=repos.filter(r=>r.readable).length+"/"+repos.length+" repos readable";
+  $("repos").innerHTML=repos.map(r=>`<div class="${r.readable?"":"bad"}"><span>${esc(r.id||r.source.split("/").pop())}</span><span>${r.readable?r.items:esc(r.error||"unreadable")}</span></div>`).join("");
+}
+
+$("filters").onclick=e=>{
+  const c=e.target.closest(".chip"); if(!c)return;
+  const f=c.dataset.f,v=c.dataset.v;
+  if(f==="all"){filterRepo=filterWho=null}
+  else if(f==="repo"){filterRepo=filterRepo===v?null:v}
+  else{filterWho=filterWho===v?null:v}
+  render();
+};
+
+let busy=false, again=false;
+async function refresh(){
+  if(busy){again=true;return}
+  busy=true;
+  try{
+    const [it,rp]=await Promise.all([api("/items"),api("/repos")]);
+    if(prev)diff(prev,it);
+    prev=it; items=it; repos=rp; render();
+    setTimeout(()=>{if(flashIds.size){flashIds=new Set();render()}},900);
+  }catch(e){
+    if(e.auth){signOut("Token not accepted.");return}
+    setConn("bad","server unreachable");
+  }finally{busy=false; if(again){again=false;refresh()}}
+}
+
+let ctrl=null, failures=0, pollTimer=null;
+function startPolling(){ if(!pollTimer){pollTimer=setInterval(refresh,5000)} setConn("poll","polling"); }
+function stopPolling(){ if(pollTimer){clearInterval(pollTimer);pollTimer=null} }
+
+async function stream(){
+  ctrl=new AbortController();
+  const my=ctrl;
+  try{
+    const r=await fetch("/events",{headers:{"Authorization":"Bearer "+token},signal:my.signal,cache:"no-store"});
+    if(r.status===401){signOut("Token not accepted.");return}
+    if(!r.ok||!r.body)throw new Error("no stream");
+    failures=0; stopPolling(); setConn("live","live"); refresh();
+    const rd=r.body.getReader(), dec=new TextDecoder(); let buf="";
+    for(;;){
+      const {value,done}=await rd.read(); if(done)break;
+      buf+=dec.decode(value,{stream:true});
+      let k; while((k=buf.indexOf("\n\n"))>=0){
+        const block=buf.slice(0,k); buf=buf.slice(k+2);
+        if(block.includes("event: change"))refresh();
+      }
+    }
+    throw new Error("stream closed");
+  }catch(e){
+    if(my.signal.aborted)return;
+    failures++; if(failures>=2)startPolling(); else setConn("bad","reconnecting…");
+    setTimeout(()=>{if(token&&ctrl===my)stream()},Math.min(1000*failures,10000));
+  }
+}
+
+async function start(t){
+  token=t; $("loginerr").textContent="";
+  try{
+    const who=await api("/me"); me=who.identity; $("me").textContent=me;
+  }catch(e){
+    token=null; saveToken(null);
+    $("loginerr").textContent=e.auth?"That token is not accepted.":"Cannot reach the server.";
+    $("login").classList.remove("hidden"); return false;
+  }
+  saveToken(t); $("login").classList.add("hidden");
+  await refresh(); stream(); return true;
+}
+function signOut(msg){
+  if(ctrl)ctrl.abort(); stopPolling(); token=null; saveToken(null); prev=null; items=[]; repos=[]; feed=[]; me="";
+  $("cols").innerHTML=""; $("filters").innerHTML=""; $("repos").innerHTML=""; renderFeed();
+  $("loginerr").textContent=msg||""; $("tok").value=""; $("login").classList.remove("hidden"); $("tok").focus();
+}
+$("signout").onclick=()=>signOut("");
+$("loginform").onsubmit=e=>{e.preventDefault(); const v=$("tok").value.trim(); if(v)start(v)};
+
+const saved=loadToken();
+if(saved){start(saved)}
+</script>
+</body>
+</html>
