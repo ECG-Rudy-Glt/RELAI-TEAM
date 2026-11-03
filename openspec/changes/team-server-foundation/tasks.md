@@ -62,7 +62,7 @@
 
 ## 6. Documentation
 
-- [ ] 6.1 Write `README.md`: what this is, how it relates to RELAI, quick start (`docker compose
+- [x] 6.1 Write `README.md`: what this is, how it relates to RELAI, quick start (`docker compose
       up` and the bare-binary path), config file format, API surface; verify the documented
       commands match what tasks 4-5 implement.
 
