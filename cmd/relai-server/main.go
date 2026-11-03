@@ -97,6 +97,9 @@ func run(cfgPath string) error {
 	}
 	defer events.Close()
 
+	for _, w := range server.MissingTools(nil) {
+		log.Printf("WARNING: %s", w)
+	}
 	agg := aggregate.New()
 	if agg.Git, err = cfg.GitAuth(); err != nil {
 		return err
