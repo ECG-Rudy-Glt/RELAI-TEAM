@@ -38,6 +38,10 @@ type Server struct {
 
 	mu     sync.RWMutex
 	status map[string]RepoStatus // by source
+
+	hub        *hub
+	dmu        sync.Mutex
+	lastDigest string
 }
 
 // New wires a server. agg may use a fake command runner in tests.
@@ -52,6 +56,7 @@ func New(cfg Config, b *board.Board, agg *aggregate.Aggregator) (*Server, error)
 		declared: append([]string(nil), cfg.Repos...),
 		tokens:   tokens,
 		status:   map[string]RepoStatus{},
+		hub:      newHub(),
 	}, nil
 }
 
@@ -59,6 +64,12 @@ func New(cfg Config, b *board.Board, agg *aggregate.Aggregator) (*Server, error)
 // change shows up without anyone rebuilding an index. A repo that can't be read this round keeps
 // its items and is reported as unreadable.
 func (s *Server) Refresh() error {
+	err := s.refresh()
+	s.checkChanged()
+	return err
+}
+
+func (s *Server) refresh() error {
 	repos, skipped := s.agg.All(s.declared)
 	refs := make([]board.RepoRef, 0, len(repos))
 	for _, r := range repos {
@@ -118,10 +129,15 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /items/{id}", s.item)
 	api.HandleFunc("POST /items/{id}/claim", s.claim)
 	api.HandleFunc("POST /items/{id}/release", s.release)
+	api.HandleFunc("GET /events", s.events)
 
 	root := http.NewServeMux()
 	root.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
+	root.HandleFunc("GET /board", s.boardPage)
+	root.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/board", http.StatusSeeOther)
 	})
 	root.Handle("/", s.authenticate(api))
 	return root
@@ -215,6 +231,7 @@ func (s *Server) claim(w http.ResponseWriter, r *http.Request) {
 	var held *board.HeldError
 	switch {
 	case err == nil:
+		s.checkChanged()
 		writeJSON(w, http.StatusOK, it)
 	case errors.As(err, &held):
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error(), "holder": held.Holder})
@@ -235,6 +252,7 @@ func (s *Server) release(w http.ResponseWriter, r *http.Request) {
 	var nh *board.NotHolderError
 	switch {
 	case err == nil:
+		s.checkChanged()
 		writeJSON(w, http.StatusOK, it)
 	case errors.As(err, &nh):
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error(), "holder": nh.Holder})

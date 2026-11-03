@@ -18,14 +18,18 @@ Relai itself stays git-only with no server, and never depends on this project.
 
 ## What you get
 
-- **One live board** over every declared repo. A task closed in Beads, or ticked in an OpenSpec
-  `tasks.md`, shows up on its own after the next refresh (default 30 s).
+- **One live board** over every declared repo, with a **web page** (`/board`) that updates the moment
+  something changes. A task closed in Beads, or ticked in an OpenSpec `tasks.md`, shows up within one
+  refresh cycle (default 30 s).
+- **Easy on your disk.** Unchanged repos cost nothing: no process is started and nothing is written
+  (see "Why it does not poll Beads").
 - **Claim / release with a guarantee.** Exactly one claim wins when several agents ask at once; the
   others are told who holds it.
 - **Agent tools (MCP).** `relai-mcp` gives Claude Code, Codex and other MCP clients five tools to
   list, claim and release work, as their own identity.
 - **Claims survive restarts.** An append-only event log (`events.jsonl`), no database to run.
-- **Per-person tokens.** Every request is authenticated as a declared team member.
+- **Per-person tokens, optional HTTPS.** Every request is authenticated as a declared team member;
+  set a certificate and key and the server speaks HTTPS itself.
 - **Honest about gaps.** A repo the server cannot read is reported as unreadable, never silently
   dropped or shown stale.
 
@@ -66,6 +70,15 @@ go build -o relai-server ./cmd/relai-server
 ./relai-server -config config.json        # or: RELAI_TEAM_CONFIG=config.json ./relai-server
 ```
 
+## Web board
+
+Open `http(s)://<host>:8080/board` (the server root redirects there). The page holds no data: it asks
+for your token, keeps it in that browser tab only (`sessionStorage`, forgotten when the tab closes),
+and then reads the same authenticated API as everything else. Columns: *Blocked*, *In progress*,
+*Claimed*, *Open*; filters by repo and by person; an activity feed of who claimed or released what.
+It updates live over the event stream, and falls back to polling if the stream is cut. It is
+read-only: claiming is done by people through the API and by agents through MCP.
+
 ## Agents (MCP)
 
 Each agent runs its own `relai-mcp`, pointed at the shared server with **its own token**, so every
@@ -76,6 +89,9 @@ go install github.com/ECG-Rudy-Glt/RELAI-TEAM/cmd/relai-mcp@latest
 
 claude mcp add relai-team -e RELAI_TEAM_URL=http://localhost:8080 -e RELAI_TEAM_TOKEN=change-me-2 -- relai-mcp
 ```
+
+Over HTTPS with a self-signed or private certificate, add `RELAI_TEAM_CA_FILE=/path/to/cert.pem`.
+`relai-mcp` warns on stderr if you point it at plain `http://` on another machine.
 
 Any MCP client that can launch a stdio server works: the command is `relai-mcp` and the two
 environment variables are `RELAI_TEAM_URL` and `RELAI_TEAM_TOKEN`. As a project `.mcp.json`:
@@ -107,8 +123,11 @@ and the two that ran out were told so cleanly.
 |---|---|---|
 | `listen` | `:8080` | Address to listen on. |
 | `data_dir` | `data` | Holds `events.jsonl`. |
-| `refresh_interval` | `30s` | How often repos are re-read (Go duration). |
-| `repos` | — | Local paths or clone URLs (shallow-cloned on each refresh). |
+| `refresh_interval` | `30s` | How often repos are *checked* for changes (Go duration, at least 1s). Checking is cheap; only changed repos are read. |
+| `full_refresh_interval` | `6h` | Longest an *unchanged* repo is trusted before being read again anyway (safety net). `0s` reads every repo every cycle: expensive, see below. |
+| `refresh_concurrency` | `8` | How many changed repos are read at once. |
+| `tls_cert`, `tls_key` | — | PEM files; set both to serve HTTPS (TLS 1.2+), or neither. |
+| `repos` | — | Local paths or clone URLs. A clone URL is only cloned when its remote HEAD moved. |
 | `members` | — | `{"identity", "token"}` or `{"identity", "token_sha256"}` (hex SHA-256, so the file holds no plaintext secret). |
 
 Config is read at startup; restart to change members or repos.
@@ -126,28 +145,65 @@ All routes except `/healthz` need `Authorization: Bearer <token>`.
 | `GET /items`, `GET /items/{id}` | Work items with `holder` and `claimed_at`. |
 | `POST /items/{id}/claim` | `200` with you as holder; `409` + current holder if taken. |
 | `POST /items/{id}/release` | `200`; `409` if someone else holds it. |
+| `GET /events` | Server-Sent Events stream: one `change` event whenever the board changes (no board data in it: re-fetch `/items`). |
+| `GET /board` | The web board (public, no data in the page). |
 
 Item IDs contain slashes (`auth-service/bd/auth-service-0p2`): **URL-encode them** in the path
 (`auth-service%2Fbd%2Fauth-service-0p2`), or you get a 404. (`relai-mcp` does this for you.)
 
+## HTTPS
+
+```json
+{ "tls_cert": "/etc/relai-team/cert.pem", "tls_key": "/etc/relai-team/key.pem" }
+```
+
+Both or neither (the server refuses to start with only one). Listening beyond loopback **without**
+them logs a warning at startup, because tokens then travel in clear. A reverse proxy that terminates
+TLS works just as well; the event stream needs response buffering off (`X-Accel-Buffering: no` is
+already sent for nginx). For a quick self-signed certificate:
+
+```sh
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -keyout key.pem -out cert.pem \
+  -days 365 -subj /CN=localhost -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
+```
+
+## Why it does not poll Beads
+
+Every `bd` run rewrites its embedded Dolt database on disk, about 2–3 MiB of journal, index and
+manifest, **even for a read, even with `--readonly`**. A server that ran `bd list` on every repo at
+every refresh was measured at ~9.5 MB/s of disk writes (~790 GiB/day) with nothing happening, enough
+to heat an NVMe drive to 80 °C. So relai-team never polls Beads blindly:
+
+- A repo is **fingerprinted** with a few `stat` calls (no process): `relai.yaml`, `.beads/last-touched`
+  (Beads rewrites it on every write and never on a read) and `openspec/changes`. `bd` and `openspec`
+  run only when that fingerprint changes, so a task change appears within one `refresh_interval` and an
+  idle board writes nothing.
+- A clone URL is checked with `git ls-remote` (no disk writes) and cloned only when its HEAD moved.
+- `full_refresh_interval` (default 6 h) re-reads every repo anyway, in case something changed that the
+  fingerprint cannot see. A repo whose Beads reading fails is not retried every cycle.
+- The server logs `refresh: re-read N repo(s)…` only when it actually read something. If you see that
+  line constantly, something is rewriting those repos' files.
+
+Setting `full_refresh_interval` to `0s` turns all of this off. Do not leave it on a laptop.
+
 ## Know before you deploy
 
-- **No HTTPS.** Tokens travel in clear over plain HTTP. Put it behind a reverse proxy that
-  terminates TLS, or keep it on a private network (VPN, Tailscale…).
 - **No claim expiry.** If an agent crashes while holding a task, the task stays held until that same
   identity releases it. There is no admin override yet.
-- **Refresh cost grows with repos.** Repos are read one after another (`bd` and `openspec` each
-  take about half a second): ten repos is roughly a 10-second cycle.
 - **Claims live in the server's log, not in Beads.** A `bd update --claim` done by hand is not seen
   as a claim on the board.
 - **Single instance.** State is held in memory and one log file; do not run two servers on one log.
-- **Not yet exercised:** repos declared by clone URL (including private ones — no git credentials
-  are handled).
-- **No web UI** in this repo yet; the API and MCP tools are the interface.
+- **Private clone URLs** need git credentials the server does not manage (clone URLs themselves are
+  tested against local `file://` remotes).
+- **The web board is read-only**, and protected by the same tokens: use HTTPS for anything beyond a
+  private network.
+- **First read cost.** Starting the server reads every repo once (about 2.5 s for ten repos on four
+  cores, in parallel); after that, only changes.
 
 ## Status
 
-v0.x. Done: aggregation, claims, persistence, token auth, HTTP API, Docker packaging, MCP tools.
+v0.x. Done: aggregation (parallel, change-driven), claims, persistence, token auth, HTTP API, event
+stream, web board, HTTPS, Docker packaging, MCP tools.
 Not started: deployment presets (deliberately deferred — see `.relai/notes.md`).
 Specs and history live in `openspec/` (`specs/` for what is true now, `changes/archive/` for how it
 got there); open tasks are in Beads (`bd ready`).

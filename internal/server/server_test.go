@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/ECG-Rudy-Glt/RELAI-TEAM/internal/aggregate"
 	"github.com/ECG-Rudy-Glt/RELAI-TEAM/internal/board"
@@ -27,6 +29,7 @@ type fixture struct {
 	cfg     Config
 	mu      sync.Mutex
 	bd      string // canned `bd list --json` output
+	tick    int
 	log     *store.Log
 	srv     *Server
 	http    *httptest.Server
@@ -61,6 +64,27 @@ func newFixture(t *testing.T) *fixture {
 	f.start()
 	t.Cleanup(f.stop)
 	return f
+}
+
+// setBD changes what `bd list --json` answers and, like the real bd does on every write, touches
+// .beads/last-touched so the aggregator's fingerprint sees that something changed.
+func (f *fixture) setBD(out string) {
+	f.t.Helper()
+	f.mu.Lock()
+	f.bd = out
+	f.mu.Unlock()
+	f.touchBeads()
+}
+
+func (f *fixture) touchBeads() {
+	f.t.Helper()
+	p := filepath.Join(f.repoDir, ".beads", "last-touched")
+	f.tick++
+	if err := os.WriteFile(p, []byte(fmt.Sprintf("touch-%d", f.tick)), 0o644); err != nil {
+		f.t.Fatal(err)
+	}
+	when := time.Now().Add(time.Duration(f.tick) * time.Second)
+	_ = os.Chtimes(p, when, when)
 }
 
 func (f *fixture) runner(dir, name string, args ...string) ([]byte, error) {
@@ -195,10 +219,8 @@ func TestClaimReleaseRoundTrip(t *testing.T) {
 
 func TestTaskStatusChangeShowsAfterRefresh(t *testing.T) {
 	f := newFixture(t)
-	f.mu.Lock()
-	f.bd = `[{"id":"b-1","title":"Wire the PDF endpoint","status":"in_progress","issue_type":"task"},
-	         {"id":"b-2","title":"Document it","status":"closed","issue_type":"task"}]`
-	f.mu.Unlock()
+	f.setBD(`[{"id":"b-1","title":"Wire the PDF endpoint","status":"in_progress","issue_type":"task"},
+	         {"id":"b-2","title":"Document it","status":"closed","issue_type":"task"}]`)
 	if err := f.srv.Refresh(); err != nil {
 		t.Fatal(err)
 	}

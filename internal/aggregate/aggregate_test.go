@@ -1,11 +1,14 @@
 package aggregate
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"sync"
 	"testing"
+	"time"
 )
 
 // gitRepo creates a git repo at dir with the given files.
@@ -176,5 +179,109 @@ func TestOpenTasksUnnumbered(t *testing.T) {
 	got := openTasks("- [x] first\n- [ ] second thing\n  - [ ] 2.1 nested numbered\n")
 	if len(got) != 2 || got[0].num != "t2" || got[1].num != "2.1" {
 		t.Fatalf("got %+v", got)
+	}
+}
+
+// slowRunner answers git for real, and bd/openspec after a fixed delay, tracking how many calls
+// run at once and how many times each directory is being read at the same moment.
+type slowRunner struct {
+	delay      time.Duration
+	mu         sync.Mutex
+	inflight   int
+	maxInfl    int
+	perDir     map[string]int
+	dirOverlap bool
+}
+
+func (r *slowRunner) run(dir, name string, args ...string) ([]byte, error) {
+	if name != "bd" {
+		return ExecRunner(dir, name, args...)
+	}
+	r.mu.Lock()
+	r.inflight++
+	if r.inflight > r.maxInfl {
+		r.maxInfl = r.inflight
+	}
+	if r.perDir == nil {
+		r.perDir = map[string]int{}
+	}
+	r.perDir[dir]++
+	if r.perDir[dir] > 1 {
+		r.dirOverlap = true
+	}
+	r.mu.Unlock()
+	time.Sleep(r.delay)
+	r.mu.Lock()
+	r.inflight--
+	r.perDir[dir]--
+	r.mu.Unlock()
+	return []byte(`[{"id":"x-1","title":"t","status":"open","issue_type":"task"}]`), nil
+}
+
+func manyRepos(t *testing.T, n int) []string {
+	t.Helper()
+	root := t.TempDir()
+	var srcs []string
+	for i := 0; i < n; i++ {
+		d := filepath.Join(root, fmt.Sprintf("repo-%02d", i))
+		gitRepo(t, d, map[string]string{"relai.yaml": fmt.Sprintf("id: repo-%02d\n", i), ".beads/x": "x"})
+		srcs = append(srcs, d)
+	}
+	return srcs
+}
+
+func TestAll_ReadsReposConcurrentlyAndKeepsOrder(t *testing.T) {
+	srcs := manyRepos(t, 10)
+	r := &slowRunner{delay: 200 * time.Millisecond}
+	a := &Aggregator{Run: r.run}
+	start := time.Now()
+	repos, skipped := a.All(srcs)
+	took := time.Since(start)
+	if len(repos) != 10 || len(skipped) != 0 {
+		t.Fatalf("repos=%d skipped=%d", len(repos), len(skipped))
+	}
+	for i, rp := range repos {
+		if want := fmt.Sprintf("repo-%02d", i); rp.ID != want {
+			t.Errorf("repo %d = %s, want %s (declared order must be kept)", i, rp.ID, want)
+		}
+	}
+	// Sequentially this is >= 10 * 200ms = 2s. Concurrently it is about one delay.
+	if took > 1200*time.Millisecond {
+		t.Errorf("took %v for 10 repos at 200ms each; reads are not running concurrently", took)
+	}
+}
+
+func TestAll_WorkerCapIsRespected(t *testing.T) {
+	srcs := manyRepos(t, 9)
+	r := &slowRunner{delay: 50 * time.Millisecond}
+	a := &Aggregator{Run: r.run, Workers: 3}
+	a.All(srcs)
+	if r.maxInfl > 3 {
+		t.Errorf("max concurrent reads = %d, want <= 3", r.maxInfl)
+	}
+	if r.maxInfl < 2 {
+		t.Errorf("max concurrent reads = %d, expected real concurrency", r.maxInfl)
+	}
+}
+
+func TestAll_BrokenRepoDoesNotHoldBackTheOthers(t *testing.T) {
+	srcs := manyRepos(t, 4)
+	srcs = append(srcs[:2], append([]string{"/nonexistent/path"}, srcs[2:]...)...)
+	r := &slowRunner{delay: 10 * time.Millisecond}
+	repos, skipped := (&Aggregator{Run: r.run}).All(srcs)
+	if len(repos) != 4 || len(skipped) != 1 || skipped[0].Source != "/nonexistent/path" {
+		t.Fatalf("repos=%d skipped=%v", len(repos), skipped)
+	}
+}
+
+func TestAll_SameSourceTwiceIsReadOnceAndNeverConcurrently(t *testing.T) {
+	srcs := manyRepos(t, 1)
+	r := &slowRunner{delay: 50 * time.Millisecond}
+	repos, _ := (&Aggregator{Run: r.run}).All([]string{srcs[0], srcs[0], srcs[0]})
+	if len(repos) != 1 {
+		t.Errorf("repos = %d, want 1 (duplicates collapsed)", len(repos))
+	}
+	if r.dirOverlap {
+		t.Error("the same repo was read by two workers at once")
 	}
 }

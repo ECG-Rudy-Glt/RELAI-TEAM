@@ -1,11 +1,15 @@
 package mcp
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -295,4 +299,43 @@ func Tools(c *Client) []Tool {
 			},
 		},
 	}
+}
+
+// PlainHTTPWarning returns a warning when baseURL would send the token over plain HTTP to a host
+// that is not this machine, else "". It is for the error stream: stdout is the protocol.
+func PlainHTTPWarning(baseURL string) string {
+	u, err := url.Parse(baseURL)
+	if err != nil || u.Scheme != "http" {
+		return ""
+	}
+	h := u.Hostname()
+	if h == "localhost" {
+		return ""
+	}
+	if ip := net.ParseIP(h); ip != nil && ip.IsLoopback() {
+		return ""
+	}
+	return fmt.Sprintf("relai-mcp: WARNING: %s is plain HTTP; your token travels in clear. Use https:// (and RELAI_TEAM_CA_FILE for a self-signed certificate).", baseURL)
+}
+
+// HTTPClient returns a client that trusts the system roots plus the PEM certificates in caFile
+// (if not empty), for servers using a self-signed or private CA.
+func HTTPClient(caFile string) (*http.Client, error) {
+	c := &http.Client{Timeout: 15 * time.Second}
+	if caFile == "" {
+		return c, nil
+	}
+	pem, err := os.ReadFile(caFile)
+	if err != nil {
+		return nil, fmt.Errorf("RELAI_TEAM_CA_FILE: %w", err)
+	}
+	pool, err := x509.SystemCertPool()
+	if err != nil || pool == nil {
+		pool = x509.NewCertPool()
+	}
+	if !pool.AppendCertsFromPEM(pem) {
+		return nil, fmt.Errorf("RELAI_TEAM_CA_FILE: no certificate found in %s", caFile)
+	}
+	c.Transport = &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}, Proxy: http.ProxyFromEnvironment}
+	return c, nil
 }

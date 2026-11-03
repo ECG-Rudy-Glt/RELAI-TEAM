@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"errors"
 	"flag"
@@ -85,7 +86,11 @@ func run(cfgPath string) error {
 	}
 	defer events.Close()
 
-	srv, err := server.New(cfg, board.New(events, past), aggregate.New())
+	agg := aggregate.New()
+	agg.Workers = cfg.RefreshConcurrency
+	agg.FullRefresh = cfg.FullRefresh()
+	agg.NoCache = cfg.FullRefresh() == 0
+	srv, err := server.New(cfg, board.New(events, past), agg)
 	if err != nil {
 		return err
 	}
@@ -103,8 +108,12 @@ func run(cfgPath string) error {
 			case <-ctx.Done():
 				return
 			case <-t.C:
+				before := agg.Reads()
 				if err := srv.Refresh(); err != nil {
 					log.Printf("refresh: %v", err)
+				}
+				if n := agg.Reads() - before; n > 0 { // quiet when nothing changed
+					log.Printf("refresh: re-read %d repo(s) whose files changed; the rest were unchanged", n)
 				}
 			}
 		}
@@ -115,11 +124,24 @@ func run(cfgPath string) error {
 		Handler:           srv.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      30 * time.Second,
+		WriteTimeout:      30 * time.Second, // lifted per request for the /events stream
+	}
+	if cfg.UsesTLS() {
+		hs.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	} else if server.ListensBeyondLoopback(cfg.Listen) {
+		log.Printf("WARNING: listening on %s over plain HTTP: tokens travel in clear. Set tls_cert and tls_key, or put a TLS-terminating proxy in front.", cfg.Listen)
 	}
 	errc := make(chan error, 1)
 	go func() {
-		log.Printf("relai-server %s listening on %s, %d repos, refresh every %s", version, cfg.Listen, len(cfg.Repos), interval)
+		scheme := "http"
+		if cfg.UsesTLS() {
+			scheme = "https"
+		}
+		log.Printf("relai-server %s listening on %s://%s, %d repos, refresh every %s, web board at /board", version, scheme, cfg.Listen, len(cfg.Repos), interval)
+		if cfg.UsesTLS() {
+			errc <- hs.ListenAndServeTLS(cfg.TLSCert, cfg.TLSKey)
+			return
+		}
 		errc <- hs.ListenAndServe()
 	}()
 	select {

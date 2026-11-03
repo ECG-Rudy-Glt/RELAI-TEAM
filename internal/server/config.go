@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"time"
 )
@@ -17,6 +18,15 @@ type Config struct {
 	RefreshInterval string   `json:"refresh_interval"` // default "30s"
 	Repos           []string `json:"repos"`            // local paths or clone URLs
 	Members         []Member `json:"members"`
+	// FullRefreshInterval is the longest an unchanged repo is trusted before being read again
+	// anyway (default "6h"). Repos are otherwise only read when their files change, because each
+	// read runs bd, which rewrites its database. "0s" reads every repo every cycle (expensive).
+	FullRefreshInterval string `json:"full_refresh_interval"`
+	// RefreshConcurrency caps how many repos are read at once; default 8.
+	RefreshConcurrency int `json:"refresh_concurrency"`
+	// TLSCert and TLSKey, both or neither, make the server speak HTTPS.
+	TLSCert string `json:"tls_cert"`
+	TLSKey  string `json:"tls_key"`
 }
 
 // Member is one identity of the declared team. Give either the token itself or its SHA-256 (hex),
@@ -46,6 +56,22 @@ func LoadConfig(path string) (Config, error) {
 	if c.RefreshInterval == "" {
 		c.RefreshInterval = "30s"
 	}
+	if (c.TLSCert == "") != (c.TLSKey == "") {
+		missing := "tls_key"
+		if c.TLSCert == "" {
+			missing = "tls_cert"
+		}
+		return Config{}, fmt.Errorf("%s: tls_cert and tls_key go together: %s is missing", path, missing)
+	}
+	if c.FullRefreshInterval == "" {
+		c.FullRefreshInterval = "6h"
+	}
+	if d, err := time.ParseDuration(c.FullRefreshInterval); err != nil || d < 0 {
+		return Config{}, fmt.Errorf("%s: full_refresh_interval must be a duration like 6h, or 0s to always read", path)
+	}
+	if c.RefreshConcurrency < 0 {
+		return Config{}, fmt.Errorf("%s: refresh_concurrency must not be negative", path)
+	}
 	if _, err := c.Interval(); err != nil {
 		return Config{}, fmt.Errorf("%s: refresh_interval: %w", path, err)
 	}
@@ -53,6 +79,31 @@ func LoadConfig(path string) (Config, error) {
 		return Config{}, fmt.Errorf("%s: %w", path, err)
 	}
 	return c, nil
+}
+
+// FullRefresh parses FullRefreshInterval (0 means always read).
+func (c Config) FullRefresh() time.Duration {
+	d, _ := time.ParseDuration(c.FullRefreshInterval)
+	return d
+}
+
+// UsesTLS reports whether the server should serve HTTPS.
+func (c Config) UsesTLS() bool { return c.TLSCert != "" && c.TLSKey != "" }
+
+// ListensBeyondLoopback reports whether addr accepts connections from other machines (an empty
+// host, a wildcard, or any non-loopback address). An unparseable address counts as beyond.
+func ListensBeyondLoopback(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return true
+	}
+	if host == "" {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return !ip.IsLoopback()
+	}
+	return host != "localhost"
 }
 
 // Interval parses RefreshInterval.

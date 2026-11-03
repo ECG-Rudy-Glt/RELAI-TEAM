@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -69,24 +71,81 @@ func ExecRunner(dir, name string, args ...string) ([]byte, error) {
 	}
 }
 
+// DefaultWorkers is how many repos are read at once when Workers is not set.
+const DefaultWorkers = 8
+
+// DefaultFullRefresh is how long a repo whose fingerprint has not changed is trusted before it is
+// read again anyway, as a safety net for a change the fingerprint cannot see.
+const DefaultFullRefresh = 6 * time.Hour
+
 // Aggregator reads declared repos.
+//
+// Reading a repo's Beads state means running `bd`, and every `bd` run rewrites its embedded Dolt
+// database (about 2-3 MiB of journal, even for `bd list --readonly`). Polling that on a timer
+// wrote ~9 MB/s to disk and overheated an SSD. So a repo is only read when a cheap fingerprint
+// (file sizes and times, no process spawned) says its inputs changed, or when FullRefresh has
+// passed. See fingerprint.go.
 type Aggregator struct {
 	Run Runner
+	// FullRefresh is the longest an unchanged repo is trusted (0 means DefaultFullRefresh).
+	FullRefresh time.Duration
+	// NoCache reads every repo on every call. Only for debugging: it is the expensive mode.
+	NoCache bool
+
+	cmu   sync.Mutex
+	cache map[string]cacheEntry
+	reads atomic.Uint64
+	hits  atomic.Uint64
+	// Workers caps how many repos are read concurrently (0 means DefaultWorkers). Each read spawns
+	// bd and openspec, so this bounds how many processes a refresh forks at once.
+	Workers int
 }
 
 // New returns an Aggregator that runs real commands.
 func New() *Aggregator { return &Aggregator{Run: ExecRunner} }
 
 // All reads every source (local path or clone URL), returning what it could read and what it had
-// to skip. It never fails as a whole: one unreadable repo is a Skip, not an error.
+// to skip, in the order the sources were declared. Sources are read concurrently (see Workers), so
+// a cycle takes about as long as the slowest repo instead of the sum of all of them. It never
+// fails as a whole: one unreadable repo is a Skip, not an error. A source listed twice is read once,
+// so no repo is ever read by two workers at the same time.
 func (a *Aggregator) All(sources []string) (repos []Repo, skipped []Skip) {
+	type result struct {
+		repo Repo
+		err  error
+	}
+	var unique []string
+	seen := map[string]bool{}
 	for _, src := range sources {
-		r, err := a.One(src)
-		if err != nil {
-			skipped = append(skipped, Skip{Source: src, Reason: err.Error()})
+		if !seen[src] {
+			seen[src] = true
+			unique = append(unique, src)
+		}
+	}
+	res := make([]result, len(unique))
+	workers := a.Workers
+	if workers <= 0 {
+		workers = DefaultWorkers
+	}
+	sem := make(chan struct{}, workers)
+	var wg sync.WaitGroup
+	for i, src := range unique {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int, src string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			r, err := a.One(src)
+			res[i] = result{r, err}
+		}(i, src)
+	}
+	wg.Wait()
+	for i, r := range res {
+		if r.err != nil {
+			skipped = append(skipped, Skip{Source: unique[i], Reason: r.err.Error()})
 			continue
 		}
-		repos = append(repos, r)
+		repos = append(repos, r.repo)
 	}
 	return repos, skipped
 }
@@ -103,6 +162,30 @@ func Items(repos []Repo) []Item {
 // One reads a single source. A missing path or a directory that is not a git repo is an error;
 // a missing relai.yaml, Beads or OpenSpec is not — those parts are just absent, noted in Repo.Notes.
 func (a *Aggregator) One(src string) (Repo, error) {
+	fp, fpOK := a.fingerprint(src)
+	if fpOK && !a.NoCache {
+		if r, ok := a.cached(src, fp); ok {
+			a.hits.Add(1)
+			return r, nil
+		}
+	}
+	r, err := a.read(src)
+	if err == nil {
+		a.reads.Add(1)
+		if fpOK && !a.NoCache {
+			a.store(src, fp, r)
+		}
+	}
+	return r, err
+}
+
+// Reads is how many repos have actually been read (processes spawned) so far.
+func (a *Aggregator) Reads() uint64 { return a.reads.Load() }
+
+// CacheHits is how many reads were skipped because the repo's fingerprint was unchanged.
+func (a *Aggregator) CacheHits() uint64 { return a.hits.Load() }
+
+func (a *Aggregator) read(src string) (Repo, error) {
 	dir, cleanup, err := a.fetch(src)
 	if err != nil {
 		return Repo{}, err
