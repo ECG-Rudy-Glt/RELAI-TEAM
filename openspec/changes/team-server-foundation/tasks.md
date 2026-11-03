@@ -2,36 +2,36 @@
 
 ## 1. Persistence (`internal/store`)
 
-- [ ] 1.1 Define the event log format (JSON-lines: repo declared, item created, item claimed, item
+- [x] 1.1 Define the event log format (JSON-lines: repo declared, item created, item claimed, item
       released) and a writer that appends one record per call, fsyncing after each write; verify
       with a unit test that two sequential appends both land, in order, surviving a process
       restart (reopen the file and replay).
-- [ ] 1.2 Add a replay function that reads the log from the start and returns the ordered list of
+- [x] 1.2 Add a replay function that reads the log from the start and returns the ordered list of
       events; verify with a test covering an empty log, a log with one event, and a log with
       out-of-order-looking-but-chronological claim/release pairs on the same item.
 
 ## 2. Repo aggregation (`internal/aggregate`)
 
-- [ ] 2.1 Add a function that reads one declared repo's state (`relai.yaml`, `bd list --json` if
+- [x] 2.1 Add a function that reads one declared repo's state (`relai.yaml`, `bd list --json` if
       `.beads/` exists, `openspec list --json` if `openspec/` exists) into a small struct, skipping
       and reporting what it can't read rather than failing; verify with a unit test against a
       fixture repo covering: full contract present, `.beads`/`openspec` absent, repo path missing.
-- [ ] 2.2 Add a function that aggregates a declared list of repos (same `relai index build`
+- [x] 2.2 Add a function that aggregates a declared list of repos (same `relai index build`
       path/clone-URL convention) into work items (one per open Beads task and per active OpenSpec
       change task); verify with a test asserting the aggregated item count and fields match a
       multi-repo fixture.
 
 ## 3. Board (`internal/board`)
 
-- [ ] 3.1 Add the in-memory board: work items keyed by ID, each with a holder field (empty or an
+- [x] 3.1 Add the in-memory board: work items keyed by ID, each with a holder field (empty or an
       identity); replay persisted events (task 1.2) into this state on construction; verify with a
       test that a board replayed from a log with a claim event shows the right holder.
-- [ ] 3.2 Add `Claim(itemID, identity)` and `Release(itemID, identity)` with a compare-and-swap on
+- [x] 3.2 Add `Claim(itemID, identity)` and `Release(itemID, identity)` with a compare-and-swap on
       the holder field (mutex-guarded), appending the resulting event to the store before
       returning success; verify with a test simulating two concurrent claims on the same item
       (goroutines + a start barrier) asserting exactly one succeeds and the loser gets the current
       holder's identity.
-- [ ] 3.3 Add `MergeAggregated(items)` that reconciles freshly aggregated items (task 2.2) into the
+- [x] 3.3 Add `MergeAggregated(items)` that reconciles freshly aggregated items (task 2.2) into the
       board without clobbering an existing holder for an item that still exists, and drops items
       for work that's gone (e.g. a closed Beads task); verify with a test covering: a new item
       appears, an existing held item keeps its holder after re-aggregation, a closed task's item is
