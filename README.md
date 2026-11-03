@@ -1,33 +1,33 @@
 # relai-team
 
-**Optional, self-hosted team server for [Relai](https://github.com/ECG-Rudy-Glt/RELAI).**
+**A self-hosted team board for humans and AI agents working across many repos.**
+It reads the work that already lives in git (Beads tasks, OpenSpec changes), shows it as one live
+board, and lets each person or agent *claim* a task so two of them never start the same one.
 
-Relai itself is deliberately git-only — one CLI, no server, no running process. That's what makes
-it adoptable by a single person with nothing but git. `relai-team` is the separate, optional layer
-for a team that needs more than Relai's git-only mode gives them: a **live** (not rebuilt-on-demand)
-view of work across several repos, and **claim/release coordination** so two agents don't collide
-on the same task.
+No new place to keep tasks: the repos stay the source of truth, the board is a view of them plus a
+claim register. It is the optional team layer for [Relai](https://github.com/ECG-Rudy-Glt/RELAI) —
+Relai itself stays git-only with no server, and never depends on this project.
 
-Relai never depends on this repo. This repo depends on Relai's repo contract (`relai.yaml`, Beads,
-OpenSpec) — it has nothing to aggregate without it.
+```
+  repo A  (relai.yaml, .beads, openspec/)  ─┐
+  repo B  (relai.yaml, .beads, openspec/)  ─┼─►  relai-server  ◄── HTTP (bearer token) ── people, scripts
+  repo C  …                                ─┘   board + claims            ▲
+                                                 events.jsonl             │ stdio
+                                                                  relai-mcp ◄── Claude Code, Codex, …
+```
 
-**Status:** v0.x, first slice implemented: aggregation, claim/release, persistence, HTTP API,
-Docker packaging. Spec and task breakdown: `openspec/changes/team-server-foundation/`.
+## What you get
 
-## What it does
-
-- `relai-server`: a single binary that reads a declared list of repos, aggregates each one's
-  `relai.yaml`, Beads tasks and OpenSpec change tasks into work items, and serves a live board over
-  HTTP. It re-reads the repos on a timer, so a status change shows up without a rebuild.
-- Claim a work item so another identity sees it is taken; release it when done. Exactly one claim
-  wins under contention; the loser gets `409` naming the current holder.
-- Board state survives restarts (an append-only JSON-lines event log, `events.jsonl` — no external
-  database). Only claims are persisted; items are always re-read from the repos.
-- Token-based identity: every request except `/healthz` must carry `Authorization: Bearer <token>`
-  of a declared team member.
-
-Not in this first slice: an MCP interface and deployment presets are planned as separate, later
-OpenSpec changes in this repo.
+- **One live board** over every declared repo. A task closed in Beads, or ticked in an OpenSpec
+  `tasks.md`, shows up on its own after the next refresh (default 30 s).
+- **Claim / release with a guarantee.** Exactly one claim wins when several agents ask at once; the
+  others are told who holds it.
+- **Agent tools (MCP).** `relai-mcp` gives Claude Code, Codex and other MCP clients five tools to
+  list, claim and release work, as their own identity.
+- **Claims survive restarts.** An append-only event log (`events.jsonl`), no database to run.
+- **Per-person tokens.** Every request is authenticated as a declared team member.
+- **Honest about gaps.** A repo the server cannot read is reported as unreadable, never silently
+  dropped or shown stale.
 
 ## Quick start
 
@@ -41,33 +41,67 @@ cat > config/config.json <<'EOF2'
   "data_dir": "/data",
   "refresh_interval": "30s",
   "repos": ["/repos/auth-service", "/repos/billing-api"],
-  "members": [{"identity": "alice", "token": "change-me"}]
+  "members": [
+    {"identity": "alice",          "token": "change-me-1"},
+    {"identity": "agent-claude-1", "token": "change-me-2"}
+  ]
 }
 EOF2
-RELAI_TEAM_REPOS=$HOME/work docker compose up -d     # $HOME/work/auth-service is /repos/auth-service
-curl -H 'Authorization: Bearer change-me' localhost:8080/items
+RELAI_TEAM_REPOS=$HOME/work docker compose up -d     # $HOME/work/auth-service → /repos/auth-service
+curl -H 'Authorization: Bearer change-me-1' localhost:8080/items
 ```
 
-- The image bundles `git`, `bd` (Beads) and `openspec`, which the aggregator reads through.
-- `RELAI_TEAM_REPOS` is mounted at `/repos` **read-write**: `bd` writes lock files in `.beads/`
-  even for a read. The container runs as `RELAI_TEAM_UID:RELAI_TEAM_GID` (default `1000:1000`);
-  set them to the owner of your repos so no root-owned files appear in them.
-- `./data` must be writable by that same user. If you first ran as root, `events.jsonl` is
-  root-owned: fix its ownership or remove it.
-- `RELAI_TEAM_PORT` changes the published port (default 8080).
-- Claims survive `docker compose restart`.
+- The image bundles `git`, `bd` (Beads) and `openspec`, which the server reads repos through.
+- `RELAI_TEAM_REPOS` is mounted **read-write**: `bd` writes lock files in `.beads/` even to read.
+  The container runs as `RELAI_TEAM_UID:RELAI_TEAM_GID` (default `1000:1000`); set them to the owner
+  of your repos so no root-owned files appear in them. `./data` must be writable by that user too.
+- `RELAI_TEAM_PORT` changes the published port (default 8080). Claims survive `docker compose restart`.
 
 ### Bare binary
 
-Needs Go 1.23+ (method+path `ServeMux` patterns), plus `git`, `bd` and `openspec` on `PATH`
-for the parts you want read.
+Needs Go 1.23+, and `git`, `bd` and `openspec` on `PATH` for the parts you want read.
 
 ```sh
 go build -o relai-server ./cmd/relai-server
 ./relai-server -config config.json        # or: RELAI_TEAM_CONFIG=config.json ./relai-server
 ```
 
-## Config file (JSON)
+## Agents (MCP)
+
+Each agent runs its own `relai-mcp`, pointed at the shared server with **its own token**, so every
+claim is attributed to the right identity.
+
+```sh
+go install github.com/ECG-Rudy-Glt/RELAI-TEAM/cmd/relai-mcp@latest
+
+claude mcp add relai-team -e RELAI_TEAM_URL=http://localhost:8080 -e RELAI_TEAM_TOKEN=change-me-2 -- relai-mcp
+```
+
+Any MCP client that can launch a stdio server works: the command is `relai-mcp` and the two
+environment variables are `RELAI_TEAM_URL` and `RELAI_TEAM_TOKEN`. As a project `.mcp.json`:
+
+```json
+{ "mcpServers": { "relai-team": {
+    "command": "relai-mcp",
+    "env": { "RELAI_TEAM_URL": "http://localhost:8080", "RELAI_TEAM_TOKEN": "change-me-2" } } } }
+```
+
+| Tool | What it does |
+|---|---|
+| `board_repos` | Declared repos, item counts, which ones could not be read. |
+| `board_items` | Work items, filterable by `repo`, `status`, `holder` (`none`, `me`, or an identity). `(you)` marks your own. |
+| `board_claim` | Claim one item. If someone holds it, the answer names them: pick other work. |
+| `board_release` | Release an item you hold. Only the holder can. |
+| `board_claim_next` | Claim the first unclaimed, non-blocked item (optionally in one repo). Safe when many agents ask at once. |
+
+Refusals come back as ordinary tool results, not crashes, so an agent just moves on.
+The token lives in the client's MCP config: treat that file like any other secret.
+
+**Tried with real agents:** three Claude Code agents, each with its own token, were told at the same
+moment to take up to 3 tasks from a repo with 6. They ended with 3 + 1 + 2 tasks, no task twice,
+and the two that ran out were told so cleanly.
+
+## Configuration (JSON)
 
 | Field | Default | Meaning |
 |---|---|---|
@@ -77,8 +111,7 @@ go build -o relai-server ./cmd/relai-server
 | `repos` | — | Local paths or clone URLs (shallow-cloned on each refresh). |
 | `members` | — | `{"identity", "token"}` or `{"identity", "token_sha256"}` (hex SHA-256, so the file holds no plaintext secret). |
 
-A repo that cannot be read is reported (`readable: false`, with the reason), never silently
-dropped and never filled with stale data.
+Config is read at startup; restart to change members or repos.
 
 ## HTTP API
 
@@ -95,15 +128,37 @@ All routes except `/healthz` need `Authorization: Bearer <token>`.
 | `POST /items/{id}/release` | `200`; `409` if someone else holds it. |
 
 Item IDs contain slashes (`auth-service/bd/auth-service-0p2`): **URL-encode them** in the path
-(`auth-service%2Fbd%2Fauth-service-0p2`), or you get a 404.
+(`auth-service%2Fbd%2Fauth-service-0p2`), or you get a 404. (`relai-mcp` does this for you.)
+
+## Know before you deploy
+
+- **No HTTPS.** Tokens travel in clear over plain HTTP. Put it behind a reverse proxy that
+  terminates TLS, or keep it on a private network (VPN, Tailscale…).
+- **No claim expiry.** If an agent crashes while holding a task, the task stays held until that same
+  identity releases it. There is no admin override yet.
+- **Refresh cost grows with repos.** Repos are read one after another (`bd` and `openspec` each
+  take about half a second): ten repos is roughly a 10-second cycle.
+- **Claims live in the server's log, not in Beads.** A `bd update --claim` done by hand is not seen
+  as a claim on the board.
+- **Single instance.** State is held in memory and one log file; do not run two servers on one log.
+- **Not yet exercised:** repos declared by clone URL (including private ones — no git credentials
+  are handled).
+- **No web UI** in this repo yet; the API and MCP tools are the interface.
+
+## Status
+
+v0.x. Done: aggregation, claims, persistence, token auth, HTTP API, Docker packaging, MCP tools.
+Not started: deployment presets (deliberately deferred — see `.relai/notes.md`).
+Specs and history live in `openspec/` (`specs/` for what is true now, `changes/archive/` for how it
+got there); open tasks are in Beads (`bd ready`).
 
 ## Why a separate repo, not a mode of Relai
 
-See `AGENTS.md` and `openspec/changes/team-server-foundation/proposal.md`. Short version: it keeps
-Relai's "git-only, no server" promise intact rather than turning it into "git-only, except..."; it
-matches Relai's own "compose, don't rebuild" principle (this repo composes with Relai's CLI/file
-contract, Beads and OpenSpec the same way Relai composes with them); and it means this idea can
-fail or succeed on its own without touching Relai's credibility.
+It keeps Relai's "git only, no server" promise intact instead of turning it into "git only,
+except…". It matches Relai's own *compose, don't rebuild* principle: this project reads Relai's
+repo contract (`relai.yaml`, Beads, OpenSpec) through their own CLIs and files, with no code
+coupling back. And it lets this idea succeed or fail on its own without touching Relai's
+credibility. Details: `openspec/changes/archive/*-team-server-foundation/proposal.md`.
 
 ## Contributing / picking up work
 
@@ -113,8 +168,8 @@ This repo uses Relai on itself. Start here:
 relai handoff     # or: bd ready, if relai isn't installed — see AGENTS.md
 ```
 
-Pick an unblocked task, do the work, commit, update `.relai/notes.md` for whoever picks this up
-next.
+Pick an unblocked task, do the work, commit (conventional style), update `.relai/notes.md` for
+whoever picks this up next. Before committing: `gofmt -l .` (empty), `go vet ./...`, `go test ./...`.
 
 ## Licence
 
