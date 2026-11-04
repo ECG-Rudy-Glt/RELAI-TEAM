@@ -4,6 +4,10 @@
 It reads the work that already lives in git (Beads tasks, OpenSpec changes), shows it as one live
 board, and lets each person or agent *claim* a task so two of them never start the same one.
 
+It reads Beads, OpenSpec and plain `TODO.md` / `TASKS.md` checklists (unchecked boxes, with a `P0`–`P4` tag
+or heading as the priority; boxes that still say "done" are reported as stale, not shown). Most urgent first,
+on the page and in `board_claim_next`.
+
 No new place to keep tasks: the repos stay the source of truth, the board is a view of them plus a
 claim register. It is the optional team layer for [Relai](https://github.com/ECG-Rudy-Glt/RELAI) —
 Relai itself stays git-only with no server, and never depends on this project.
