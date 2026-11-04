@@ -3,6 +3,10 @@ package server
 import (
 	"bufio"
 	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -75,5 +79,34 @@ func TestCloseStreamsEndsOpenEventStreams(t *testing.T) {
 	case <-ended:
 	case <-time.After(2 * time.Second):
 		t.Fatal("the stream was still open 2 s after CloseStreams: a graceful shutdown would wait for it")
+	}
+}
+
+func TestTwoReposWithTheSameIDDoNotShareItems(t *testing.T) {
+	f := newFixture(t)
+	second := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(second, ".beads"), 0o755)
+	_ = os.WriteFile(filepath.Join(second, "relai.yaml"), []byte("id: billing-api\nsummary: A different repo, same id.\n"), 0o644)
+	if out, err := exec.Command("git", "-C", second, "init", "-q", "-b", "main").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+	f.stop()
+	f.cfg.Repos = append(f.cfg.Repos, second)
+	f.start()
+
+	code, _, repos := f.do("GET", "/repos", "alice-token")
+	if code != 200 || len(repos) != 2 {
+		t.Fatalf("repos = %d %v", code, repos)
+	}
+	first, dup := repos[0].(map[string]any), repos[1].(map[string]any)
+	if first["readable"] != true {
+		t.Errorf("the first repo with the id should stay readable: %v", first)
+	}
+	if dup["readable"] != false || !strings.Contains(dup["error"].(string), "already used") || !strings.Contains(dup["error"].(string), "billing-api") {
+		t.Errorf("the second repo must say why it is not used: %v", dup)
+	}
+	_, _, items := f.do("GET", "/items", "alice-token")
+	if len(items) != 2 { // the two fixture tasks, once
+		t.Errorf("items = %d, want 2 (no duplicates)", len(items))
 	}
 }

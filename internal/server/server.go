@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"sort"
 	"strings"
@@ -94,7 +95,20 @@ func (s *Server) Refresh() error {
 }
 
 func (s *Server) refresh() error {
-	repos, skipped := s.agg.All(s.declared)
+	read, skipped := s.agg.All(s.declared)
+	// Two repos with the same relai.yaml id would share item ids, and a claim on one would show
+	// on the other. The first declared keeps the id; the others are reported as unreadable, with
+	// the reason, until one of them changes its id.
+	repos := read[:0:0]
+	firstWithID := map[string]string{}
+	for _, r := range read {
+		if other, dup := firstWithID[r.ID]; dup && r.ID != "" {
+			skipped = append(skipped, aggregate.Skip{Source: r.Source, Reason: fmt.Sprintf("id %q is already used by %s: give each repo its own id in relai.yaml", r.ID, other)})
+			continue
+		}
+		firstWithID[r.ID] = r.Source
+		repos = append(repos, r)
+	}
 	refs := make([]board.RepoRef, 0, len(repos))
 	for _, r := range repos {
 		refs = append(refs, board.RepoRef{ID: r.ID, Source: r.Source})
