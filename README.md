@@ -203,7 +203,7 @@ All routes except `/healthz` need `Authorization: Bearer <token>`.
 | `POST /items/{id}/claim` | `200` with you as holder and `expires_at`; `409` + current holder if taken. Claiming an item you already hold **renews** it. |
 | `POST /items/{id}/release` | `200`; `409` if someone else holds it. Add `?force=true` as an administrator to free an item someone else holds (`403` for anyone else; the log records who did it). |
 | `GET /events` | Server-Sent Events stream: one `change` event whenever the board changes (no board data in it: re-fetch `/items`). |
-| `GET /changes?since=N` | What happened after sequence number N (claims, releases, new or changed items), the current `seq`, and `complete: false` when N is older than the 2,000 events kept (then list `/items` again). Without `since`: the current `seq` and the latest 10. |
+| `GET /changes?since=N` | What happened after sequence number N (claims, releases, new or changed items), the current `seq`, and `complete: false` when N is older than the 2,000 events kept (then list `/items` again). Without `since`: the current `seq` and the latest 10. | With `net=1` only the last change of each item is kept (claimed and released ten times = one line); `board_changes` always asks for it.
 | `GET /board` | The web board (public, no data in the page). |
 
 Item IDs contain slashes (`auth-service/bd/auth-service-0p2`): **URL-encode them** in the path

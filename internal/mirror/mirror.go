@@ -62,6 +62,9 @@ type Mirror struct {
 	lastFull    time.Time
 	blockedTill time.Time
 	requests    int
+	failures    int       // consecutive failures
+	retryAt     time.Time // no request before this, after a failure
+	lastErr     error
 }
 
 // New returns a mirror for src. The HTTP client never follows a redirect to another host, so the token
@@ -96,14 +99,43 @@ func (m *Mirror) Read() (aggregate.Repo, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := m.now()
+	// After a failure, wait before asking again: the interval, doubling at each consecutive failure up to
+	// an hour. Without this a source that never succeeded would be asked at every refresh.
+	if now.Before(m.retryAt) {
+		return aggregate.Repo{}, m.lastErr
+	}
+	r, err := m.read(now)
+	if err != nil && m.blockedTill.After(now) {
+		return aggregate.Repo{}, err // a rate limit has its own, exact, wait: blockedTill
+	}
+	if err != nil {
+		m.failures++
+		wait := m.interval()
+		for i := 1; i < m.failures && wait < time.Hour; i++ {
+			wait *= 2
+		}
+		if wait > time.Hour {
+			wait = time.Hour
+		}
+		m.retryAt, m.lastErr = now.Add(wait), err
+		return aggregate.Repo{}, err
+	}
+	m.failures, m.retryAt, m.lastErr = 0, time.Time{}, nil
+	return r, nil
+}
+
+func (m *Mirror) interval() time.Duration {
+	if m.Src.Interval > 0 {
+		return m.Src.Interval
+	}
+	return DefaultInterval
+}
+
+func (m *Mirror) read(now time.Time) (aggregate.Repo, error) {
 	if now.Before(m.blockedTill) {
 		return aggregate.Repo{}, fmt.Errorf("rate limited by %s until %s", m.Src.Provider, m.blockedTill.UTC().Format("15:04Z"))
 	}
-	interval := m.Src.Interval
-	if interval <= 0 {
-		interval = DefaultInterval
-	}
-	if m.have && now.Sub(m.lastRequest) < interval {
+	if m.have && now.Sub(m.lastRequest) < m.interval() {
 		return m.repo, nil
 	}
 	m.lastRequest = now
