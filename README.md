@@ -161,6 +161,8 @@ environment variables are `RELAI_TEAM_URL` and `RELAI_TEAM_TOKEN`. As a project 
 | `board_claim` | Claim one item. If someone holds it, the answer names them: pick other work. Claiming your own item again renews it; your items show when their claim lapses. |
 | `board_release` | Release an item you hold. Administrators can pass `force` to free someone else's (a crashed agent's, say). |
 | `board_claim_next` | Claim the first unclaimed, non-blocked item (optionally in one repo). Safe when many agents ask at once. |
+| `board_find` | Before building something: which repos provide or consume a capability (case-insensitive) and who they work with. |
+| `board_links` | How the repos relate: provides, consumes, declared links; with `candidates` the mentions found in their files (evidence, not verified). |
 | `board_changes` | What happened since a sequence number, in a few lines instead of listing every item again. Call it once for the number, then with `since=<number>`. |
 
 Refusals come back as ordinary tool results, not crashes, so an agent just moves on.
@@ -185,6 +187,7 @@ and the two that ran out were told so cleanly.
 | `tls_cert`, `tls_key` | — | PEM files; set both to serve HTTPS (TLS 1.2+), or neither. |
 | `repos` | — | Local paths or clone URLs; at least one. A clone URL is only cloned when its remote HEAD moved. The same repository twice (also through a symlink) is refused, and so is a second repo reusing another's `relai.yaml` `id` (it is shown as unreadable, with the reason). |
 | `issue_mirrors` | — | GitHub or GitLab projects whose open issues appear as items, read-only. See "Issues from GitHub or GitLab". |
+| `discover` | — | Folders whose git repos join the board automatically: `[{"folder": "/repos", "depth": 1}]` (depth 1-5). Re-scanned at each refresh. See "Repos from a folder". |
 | `auth_failures_per_minute`, `requests_per_minute`, `trust_proxy` | `10`, `600`, `false` | Rate limits: wrong or missing tokens per client address, and requests per member (`0` turns one off); `trust_proxy` reads the client address from the last `X-Forwarded-For` entry, only behind a proxy that sets it. |
 | `members` | — | Identities are 1-64 letters, digits, `.` `_` `-` `@`; a plain `token` is at least 16 characters (`relai-server init` generates 48). `{"identity", "token"}` or `{"identity", "token_sha256"}` (hex SHA-256, so the file holds no plaintext secret), and `"admin": true` to let that member force-release others' items. |
 
@@ -252,6 +255,30 @@ GITHUB_TOKEN=ghp_… relai-server -config config.json       # Docker: put it in 
   are verified strictly.
 - A private repo is cloned only when its remote HEAD moved (`git ls-remote`, no disk writes), like the
   rest of the change-driven refresh.
+
+## Repos from a folder, and how they relate
+
+You do not have to list the repos by hand. Point the server at the folder where your projects live (in Docker, the volume mounted
+at `/repos`):
+
+```json
+{ "discover": [{ "folder": "/repos", "depth": 1 }] }
+```
+
+Every git repository there (symbolic links to repositories included, each once) joins the board, and the folder is looked at again at
+each refresh: **a project you clone into it appears by itself**. A repository that disappears becomes unreadable but keeps its items
+and claims. `repos` and `discover` can be used together; at least one of `repos`, `discover` or `issue_mirrors` is required.
+
+The board also reads each repo's `relai.yaml`: `provides:` and `consumes:` (capability names) and `links:` (ids of the repos it works with).
+
+- `GET /links` returns the repos with those fields and the **edges** that follow: *declared* (a person wrote `links:`) and *capability*
+  (a repo consumes what another provides). With `?candidates=1` it also returns the **mentions** found in the files of the repos on
+  the server's disk: strong = the other repo's remote URL or a relative path to it, weak = its name as a word (with a count of those in
+  CI, deployment or config files, which are far more often real). Mentions are **evidence, not links**: they come back with
+  `declared: false` and a note, and only a person writes `links:` in a `relai.yaml` (`relai discover --links --propose` prints a proposal).
+  The search runs `git grep` between every pair of repos, read-only, and is cached for 30 minutes; repos read by clone URL are not searched.
+- `GET /find?capability=auth.oidc` (case-insensitive) says which repos provide or consume it and who they work with.
+- MCP: `board_find` ("does the team already have this?") and `board_links`. Not finding something means "nobody declared it", not "it does not exist".
 
 ## Issues from GitHub or GitLab (read-only mirror)
 

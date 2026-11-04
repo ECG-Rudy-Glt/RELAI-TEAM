@@ -38,6 +38,9 @@ type Config struct {
 	FullRefreshInterval string `json:"full_refresh_interval"`
 	// RefreshConcurrency caps how many repos are read at once; default 8.
 	RefreshConcurrency int `json:"refresh_concurrency"`
+	// Discover lists folders whose git repositories are added to the board automatically (re-scanned at each
+	// refresh, so a project cloned there appears without editing this file). Read-only.
+	Discover []DiscoverConfig `json:"discover"`
 	// IssueMirrors reflects the open issues of GitHub or GitLab projects onto the board, read-only.
 	IssueMirrors []IssueMirrorConfig `json:"issue_mirrors"`
 	// AuthFailuresPerMinute caps wrong or missing tokens per client address (default 10; 0 turns it off). Past
@@ -70,6 +73,12 @@ type IssueMirrorConfig struct {
 	BaseURL  string `json:"base_url,omitempty"` // https API root; default api.github.com / gitlab.com (self-hosted GitLab: https://gitlab.example.com)
 	RepoID   string `json:"repo_id,omitempty"`  // id the items appear under; default: the project's last path segment
 	Interval string `json:"interval,omitempty"` // shortest time between requests to the forge; default 5m, at least 1m
+}
+
+// DiscoverConfig is a folder to scan for repositories.
+type DiscoverConfig struct {
+	Folder string `json:"folder"`
+	Depth  int    `json:"depth,omitempty"` // folder levels to look down; default 1
 }
 
 var repoIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
@@ -161,7 +170,7 @@ func LoadConfig(path string) (Config, error) {
 	if err := dec.Decode(&c); err != nil {
 		return Config{}, fmt.Errorf("%s: %w", path, err)
 	}
-	if err := checkRepos(path, c.Repos, len(c.IssueMirrors) > 0); err != nil {
+	if err := checkRepos(path, c.Repos, len(c.IssueMirrors) > 0, len(c.Discover) > 0); err != nil {
 		return Config{}, err
 	}
 	if c.Listen == "" {
@@ -187,6 +196,11 @@ func LoadConfig(path string) (Config, error) {
 	}
 	if _, err := c.GitAuth(); err != nil {
 		return Config{}, fmt.Errorf("%s: %w", path, err)
+	}
+	for i, d := range c.Discover {
+		if strings.TrimSpace(d.Folder) == "" || d.Depth < 0 || d.Depth > 5 {
+			return Config{}, fmt.Errorf("%s: discover[%d]: folder is required and depth is 1 to 5", path, i)
+		}
 	}
 	if _, err := c.Mirrors(); err != nil {
 		return Config{}, fmt.Errorf("%s: %w", path, err)
@@ -227,9 +241,9 @@ func LoadConfig(path string) (Config, error) {
 
 // checkRepos refuses an empty list (a server with nothing to show), blank entries, and the same
 // repository declared twice, directly or through a symbolic link.
-func checkRepos(path string, repos []string, hasMirrors bool) error {
-	if len(repos) == 0 && !hasMirrors {
-		return fmt.Errorf("%s: repos: declare at least one repository (a local path or a clone URL) or an issue_mirrors entry", path)
+func checkRepos(path string, repos []string, hasMirrors, hasDiscover bool) error {
+	if len(repos) == 0 && !hasMirrors && !hasDiscover {
+		return fmt.Errorf("%s: repos: declare at least one repository (a local path or a clone URL) an issue_mirrors entry or a discover folder", path)
 	}
 	seen := map[string]int{}
 	for i, r := range repos {

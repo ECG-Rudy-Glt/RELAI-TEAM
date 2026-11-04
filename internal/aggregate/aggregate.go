@@ -40,6 +40,8 @@ type Repo struct {
 	Summary string   `json:"summary,omitempty"`
 	Items   []Item   `json:"items"`
 	Notes   []string `json:"notes,omitempty"` // parts that could not be read, and why
+	// Manifest holds what relai.yaml says the repo provides and consumes and who it works with.
+	Manifest
 }
 
 // Skip is a declared repo that could not be read at all.
@@ -212,6 +214,7 @@ func (a *Aggregator) read(src string) (Repo, error) {
 		if id, summary := parseManifest(b); id != "" {
 			r.ID, r.Summary = id, summary
 		}
+		r.Manifest = parseLists(b)
 	} else {
 		r.Notes = append(r.Notes, "no relai.yaml")
 	}

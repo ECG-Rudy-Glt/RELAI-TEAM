@@ -191,7 +191,7 @@ const instructions = "This is the team board: work items from several repos, eac
 	"person or agent. Before you start a task, claim it (board_claim or board_claim_next); if the " +
 	"claim is refused, someone else is on it, so pick other work. Release what you will not finish. " +
 	"A claim lapses after a while (the time is shown on your items): claim the item again to renew it " +
-	"while you are still working; if you stop, it frees itself. To catch up on a board you already know, " +
+	"while you are still working; if you stop, it frees itself. Before building something, call board_find to see whether a repo of the team already provides it. To catch up on a board you already know, " +
 	"call board_changes with the seq it gave you last time instead of listing every item again."
 
 // Instructions is sent to the client at initialize time.
@@ -369,6 +369,137 @@ func Tools(c *Client) []Tool {
 				}
 				fmt.Fprintf(&b, "next: board_changes since=%d", res.Seq)
 				return b.String(), false
+			},
+		},
+		{
+			Name: "board_find",
+			Description: "Before you build something, check whether the team already has it: which repos provide a capability " +
+				"(e.g. auth.oidc) and which consume it, and who each works with. Case-insensitive. It reads what each repo declares " +
+				"in its relai.yaml, so a repo that does not declare it is not found: say so rather than concluding it does not exist.",
+			InputSchema: obj(map[string]any{"capability": str("capability name, e.g. auth.oidc")}, "capability"),
+			Handler: func(raw json.RawMessage) (string, bool) {
+				var a struct{ Capability string }
+				_ = json.Unmarshal(raw, &a)
+				if strings.TrimSpace(a.Capability) == "" {
+					return "capability is required", true
+				}
+				var res struct {
+					Repos []struct {
+						ID       string   `json:"id"`
+						Summary  string   `json:"summary"`
+						Role     string   `json:"role"`
+						Links    []string `json:"links"`
+						LinkedBy []string `json:"linked_by"`
+					} `json:"repos"`
+				}
+				if err := c.do("GET", "/find?capability="+url.QueryEscape(a.Capability), &res); err != nil {
+					return fail(err)
+				}
+				if len(res.Repos) == 0 {
+					return fmt.Sprintf("No repo of the board declares %q (provides or consumes). A repo may have it without having declared it in relai.yaml.", a.Capability), false
+				}
+				var b strings.Builder
+				for _, r := range res.Repos {
+					fmt.Fprintf(&b, "%s %s %s", r.ID, r.Role, a.Capability)
+					if r.Summary != "" {
+						fmt.Fprintf(&b, " — %s", r.Summary)
+					}
+					b.WriteString("\n")
+					if len(r.Links) > 0 {
+						fmt.Fprintf(&b, "    works with: %s\n", strings.Join(r.Links, ", "))
+					}
+				}
+				return strings.TrimRight(b.String(), "\n"), false
+			},
+		},
+		{
+			Name: "board_links",
+			Description: "How the repos of the board relate: for one repo (or all), what it provides and consumes, the repos it declares it works with, " +
+				"who declares a link to it, and with candidates=true the MENTIONS found in the files of repos on the server's disk. " +
+				"A mention is evidence, not a verified link: check the files it points to and ask a person before declaring it.",
+			InputSchema: obj(map[string]any{
+				"repo":       str("only this repo id; default all"),
+				"candidates": map[string]any{"type": "boolean", "description": "also list mentions between repos (slower, cached)"},
+			}),
+			Handler: func(raw json.RawMessage) (string, bool) {
+				var a struct {
+					Repo       string
+					Candidates bool
+				}
+				_ = json.Unmarshal(raw, &a)
+				path := "/links"
+				if a.Candidates {
+					path += "?candidates=1"
+				}
+				var res struct {
+					Repos []struct {
+						ID       string   `json:"id"`
+						Readable bool     `json:"readable"`
+						Provides []string `json:"provides"`
+						Consumes []string `json:"consumes"`
+						Links    []string `json:"links"`
+						LinkedBy []string `json:"linked_by"`
+					} `json:"repos"`
+					Candidates []struct {
+						From       string   `json:"from"`
+						To         string   `json:"to"`
+						Strong     int      `json:"strong_files"`
+						Weak       int      `json:"weak_files"`
+						WeakConfig int      `json:"weak_config_files"`
+						Kinds      []string `json:"kinds"`
+						Declared   bool     `json:"declared"`
+					} `json:"candidates"`
+				}
+				if err := c.do("GET", path, &res); err != nil {
+					return fail(err)
+				}
+				var b strings.Builder
+				n := 0
+				for _, r := range res.Repos {
+					if a.Repo != "" && r.ID != a.Repo {
+						continue
+					}
+					n++
+					fmt.Fprintf(&b, "%s", r.ID)
+					if !r.Readable {
+						b.WriteString(" (unreadable now)")
+					}
+					b.WriteString("\n")
+					for _, kv := range []struct {
+						k string
+						v []string
+					}{{"provides", r.Provides}, {"consumes", r.Consumes}, {"works with", r.Links}, {"declared by", r.LinkedBy}} {
+						if len(kv.v) > 0 {
+							fmt.Fprintf(&b, "    %s: %s\n", kv.k, strings.Join(kv.v, ", "))
+						}
+					}
+				}
+				if a.Repo != "" && n == 0 {
+					return fmt.Sprintf("no repo %q on the board", a.Repo), true
+				}
+				if a.Candidates {
+					b.WriteString("Mentions (evidence, NOT verified links; strong = remote URL or relative path, weak = the name as a word):\n")
+					shown := 0
+					for _, c := range res.Candidates {
+						if a.Repo != "" && c.From != a.Repo && c.To != a.Repo {
+							continue
+						}
+						shown++
+						if shown > 30 {
+							b.WriteString("    … more (narrow with repo)\n")
+							break
+						}
+						state := "not declared"
+						if c.Declared {
+							state = "declared"
+						}
+						fmt.Fprintf(&b, "    %s -> %s: strong %d, weak %d (%d in CI/deploy/config) [%s]\n", c.From, c.To, c.Strong, c.Weak, c.WeakConfig, state)
+					}
+					if shown == 0 {
+						b.WriteString("    none\n")
+					}
+				}
+				return strings.TrimRight(b.String(), "\n"), false
 			},
 		},
 		{
