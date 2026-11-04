@@ -229,9 +229,9 @@ func (a *Aggregator) read(src string) (Repo, error) {
 		}
 		r.Items = append(r.Items, items...)
 	}
-	for _, name := range todoFiles {
-		if b, err := os.ReadFile(filepath.Join(dir, name)); err == nil {
-			items, note := todoItems(string(b), r.ID, name)
+	for _, f := range findTodoFiles(dir) {
+		if b, err := os.ReadFile(filepath.Join(dir, f)); err == nil {
+			items, note := todoItems(string(b), r.ID, f)
 			r.Items = append(r.Items, items...)
 			if note != "" {
 				r.Notes = append(r.Notes, note)

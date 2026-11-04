@@ -3,20 +3,67 @@ package aggregate
 import (
 	"crypto/sha256"
 	"fmt"
+	"os"
+	"path"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
 
-// todoFiles are the plain checklists some projects keep next to (or instead of) a tracker.
-var todoFiles = []string{"TODO.md", "TASKS.md"}
+// todoFiles are the plain checklists some projects keep next to (or instead of) a tracker. They are looked for
+// at the root and in the folders where projects usually keep documents; the name is matched without case.
+var todoFiles = []string{"todo.md", "tasks.md"}
+var todoDirs = []string{"", "docs", "doc", "documentation"}
+
+// findTodoFiles returns the paths (relative to dir, slash-separated) of the checklists of a repository. Only
+// regular files count: a symbolic link is never followed, so a link to a file outside the repository is not read.
+func findTodoFiles(dir string) []string {
+	var out []string
+	scan := func(rel string) {
+		entries, err := os.ReadDir(filepath.Join(dir, rel))
+		if err != nil {
+			return
+		}
+		for _, e := range entries {
+			if !e.Type().IsRegular() {
+				continue
+			}
+			for _, n := range todoFiles {
+				if strings.EqualFold(e.Name(), n) {
+					out = append(out, path.Join(rel, e.Name()))
+				}
+			}
+		}
+	}
+	scan("")
+	root, err := os.ReadDir(dir)
+	if err != nil {
+		return out
+	}
+	for _, e := range root { // a real folder (not a link) named docs, doc or documentation, in any case
+		if !e.IsDir() {
+			continue
+		}
+		for _, d := range todoDirs[1:] {
+			if strings.EqualFold(e.Name(), d) {
+				scan(e.Name())
+			}
+		}
+	}
+	return out
+}
 
 // maxTodoItems bounds what one file can add to the board: a checklist of thousands of lines is a
 // notebook, not a task list.
 const maxTodoItems = 300
 
 var (
-	todoBox  = regexp.MustCompile(`^[-*]\s+\[ \]\s+(.+)$`)
-	todoPrio = regexp.MustCompile(`(?i)(?:\[|\(|\b)P([0-4])(?:\]|\)|\b)`)
+	todoBox = regexp.MustCompile(`^[-*]\s+\[ \]\s+(.+)$`)
+	// A priority on a line is "[P1]" or "(P1)" anywhere, or "P1:" / "P1 -" at the start. A bare "P1" inside a
+	// sentence ("see page P1 of the docs") is not a priority.
+	todoPrio = regexp.MustCompile(`\[P([0-4])\]|\(P([0-4])\)|^P([0-4])\s*[:\-–—]`)
+	// A heading may carry a bare P-number: "## P0 urgent", "## Backlog P3".
+	headPrio = regexp.MustCompile(`\bP([0-4])\b`)
 	// a box that still says it is finished: the file is out of date, not the work
 	todoDone = regexp.MustCompile(`(?i)(✅|✔|\bdone\b|\bfait\b|\bterminé\b|\bfini\b)`)
 )
@@ -42,7 +89,7 @@ func todoItems(md, repo, file string) ([]Item, string) {
 		t := strings.TrimSpace(l)
 		if strings.HasPrefix(t, "#") {
 			heading = ""
-			if m := todoPrio.FindStringSubmatch(t); m != nil {
+			if m := headPrio.FindStringSubmatch(t); m != nil {
 				heading = "P" + m[1]
 			}
 			continue
@@ -62,7 +109,11 @@ func todoItems(md, repo, file string) ([]Item, string) {
 		}
 		prio := heading
 		if p := todoPrio.FindStringSubmatch(text); p != nil {
-			prio = "P" + p[1]
+			for _, g := range p[1:] {
+				if g != "" {
+					prio = "P" + g
+				}
+			}
 		}
 		sum := fmt.Sprintf("%x", sha256.Sum256([]byte(strings.ToLower(text))))[:8]
 		seen[sum]++
@@ -72,7 +123,7 @@ func todoItems(md, repo, file string) ([]Item, string) {
 		if len(text) > 160 {
 			text = text[:160] + "…"
 		}
-		items = append(items, Item{ID: repo + "/todo/" + sum, Repo: repo, Kind: KindTodo, Title: text, Status: "open", Priority: prio})
+		items = append(items, Item{ID: repo + "/todo/" + idPrefix(file) + sum, Repo: repo, Kind: KindTodo, Title: text, Status: "open", Priority: prio})
 	}
 	var notes []string
 	if stale > 0 {
@@ -85,4 +136,15 @@ func todoItems(md, repo, file string) ([]Item, string) {
 		return items, ""
 	}
 	return items, file + ": " + strings.Join(notes, "; ")
+}
+
+// idPrefix keeps the ids of the root TODO.md as they were, and tells the other checklists apart so the same
+// sentence in two files does not become one item.
+func idPrefix(file string) string {
+	f := strings.ToLower(file)
+	if f == "todo.md" {
+		return ""
+	}
+	f = strings.TrimSuffix(f, ".md")
+	return strings.NewReplacer("/", "-", " ", "-").Replace(f) + "-"
 }

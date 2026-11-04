@@ -224,6 +224,13 @@ func run(cfgPath string, standby bool) error {
 			log.Printf("reloaded members, tokens and request limits (repos, listen address, TLS and the rest need a restart)")
 		}
 	}()
+	if cfg.UsesTLS() {
+		// Fail before announcing anything, and name the settings: the error of net/http says "failed to find
+		// any PEM data" without saying in which file.
+		if _, err := tls.LoadX509KeyPair(cfg.TLSCert, cfg.TLSKey); err != nil {
+			return fmt.Errorf("tls_cert %q / tls_key %q cannot be used: %w", cfg.TLSCert, cfg.TLSKey, err)
+		}
+	}
 	errc := make(chan error, 1)
 	go func() {
 		scheme := "http"
