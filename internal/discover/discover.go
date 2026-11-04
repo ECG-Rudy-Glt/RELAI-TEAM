@@ -70,8 +70,41 @@ func Find(folder string, depth int) ([]string, error) {
 		return []string{abs}, nil
 	}
 	walk(abs, 1)
+	out = mergeWorktrees(out)
 	sort.Strings(out)
 	return out, nil
+}
+
+// mergeWorktrees keeps one path per repository: working copies sharing a git directory (git worktrees)
+// are one project. The main working copy (its .git is a folder) wins; with only linked copies, the first
+// path in name order stays.
+func mergeWorktrees(paths []string) []string {
+	group := map[string][]string{}
+	var order []string
+	for _, p := range paths {
+		key := gitOut(p, "rev-parse", "--path-format=absolute", "--git-common-dir")
+		if key == "" {
+			key = p
+		}
+		if _, ok := group[key]; !ok {
+			order = append(order, key)
+		}
+		group[key] = append(group[key], p)
+	}
+	var kept []string
+	for _, k := range order {
+		ps := group[k]
+		sort.Strings(ps)
+		main := ps[0]
+		for _, p := range ps {
+			if st, err := os.Stat(filepath.Join(p, ".git")); err == nil && st.IsDir() {
+				main = p
+				break
+			}
+		}
+		kept = append(kept, main)
+	}
+	return kept
 }
 
 // Repo is a repository to look for mentions in and of.
@@ -94,7 +127,7 @@ type Link struct {
 
 const minNameLength = 4
 
-var excluded = []string{":!graphify-out", ":!node_modules", ":!vendor", ":!*.lock", ":!package-lock.json", ":!go.sum", ":!*.min.js", ":!*.svg"}
+var excluded = []string{":!graphify-out", ":!node_modules", ":!vendor", ":!*.lock", ":!package-lock.json", ":!go.sum", ":!*.min.js", ":!*.svg", ":!*_test.go", ":!testdata", ":!*.test.*", ":!*.spec.*"}
 
 // Mentions returns the mentions between the repositories, strongest first.
 func Mentions(repos []Repo) []Link {
@@ -106,6 +139,10 @@ func Mentions(repos []Repo) []Link {
 	for _, a := range repos {
 		for _, b := range repos {
 			if a.Path == b.Path || a.ID == b.ID {
+				continue
+			}
+			// Two clones of the same remote are one project, not a dependency.
+			if slugs[a.ID] != "" && slugs[a.ID] == slugs[b.ID] {
 				continue
 			}
 			name := filepath.Base(b.Path)
