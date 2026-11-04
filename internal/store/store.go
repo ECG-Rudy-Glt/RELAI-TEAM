@@ -44,6 +44,7 @@ type Event struct {
 type Log struct {
 	mu   sync.Mutex
 	f    *os.File
+	lock *os.File // holds the exclusive lock on the journal for as long as the log is open
 	next int64
 	size int64 // length of the journal up to the end of the last fully written line
 	torn bool  // a failed write may have left bytes after size that could not be cut off yet
@@ -51,30 +52,41 @@ type Log struct {
 
 // Open opens (or creates) the log at path, positioned to append after its last event.
 func Open(path string) (*Log, error) {
+	// Take the lock before touching the file: a second server on the same journal would hand the
+	// same item to two people and reuse sequence numbers.
+	lock, err := lockJournal(path)
+	if err != nil {
+		return nil, err
+	}
 	if err := truncateTornTail(path); err != nil {
+		lock.Close()
 		return nil, err
 	}
 	if err := quarantineInvalidLines(path); err != nil {
+		lock.Close()
 		return nil, err
 	}
 	events, err := Replay(path)
 	if err != nil {
+		lock.Close()
 		return nil, err
 	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
+		lock.Close()
 		return nil, err
 	}
 	st, err := f.Stat()
 	if err != nil {
 		f.Close()
+		lock.Close()
 		return nil, err
 	}
 	next := int64(1)
 	if n := len(events); n > 0 {
 		next = events[n-1].Seq + 1
 	}
-	return &Log{f: f, next: next, size: st.Size()}, nil
+	return &Log{f: f, lock: lock, next: next, size: st.Size()}, nil
 }
 
 // Append writes e as the next event, assigning its sequence number and time, and returns it as
@@ -192,7 +204,15 @@ func quarantineInvalidLines(path string) error {
 }
 
 // Close closes the underlying file.
-func (l *Log) Close() error { return l.f.Close() }
+func (l *Log) Close() error {
+	err := l.f.Close()
+	if l.lock != nil {
+		if lerr := l.lock.Close(); err == nil {
+			err = lerr
+		}
+	}
+	return err
+}
 
 // Replay reads every event in the log at path, in order. A missing file is an empty log.
 func Replay(path string) ([]Event, error) {

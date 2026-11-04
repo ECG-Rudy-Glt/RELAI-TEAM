@@ -288,7 +288,7 @@ Setting `full_refresh_interval` to `0s` turns all of this off. Do not leave it o
 
 - **Claims live in the server's log, not in Beads.** A `bd update --claim` done by hand is not seen
   as a claim on the board.
-- **Single instance.** State is held in memory and one log file; do not run two servers on one log.
+- **Single instance.** State is held in memory and one log file; a second server on the same `data_dir` is refused (an exclusive lock on `events.jsonl.lock`; not enforced on Windows).
 - **Static tokens.** Git tokens and member tokens do not rotate by themselves: change them and restart.
 - **The web board is read-only**, and protected by the same tokens: use HTTPS for anything beyond a
   private network.
