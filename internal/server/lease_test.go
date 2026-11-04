@@ -117,7 +117,7 @@ func TestConfigClaimLease(t *testing.T) {
 	dir := t.TempDir()
 	write := func(extra string) string {
 		p := dir + "/c.json"
-		_ = os.WriteFile(p, []byte(`{`+extra+`"repos":["/x"],"members":[{"identity":"a","token":"t","admin":true}]}`), 0o644)
+		_ = os.WriteFile(p, []byte(`{`+extra+`"repos":["/x"],"members":[{"identity":"a","token":"tttttttttttttttttt","admin":true}]}`), 0o644)
 		return p
 	}
 	c, err := LoadConfig(write(""))
@@ -139,7 +139,7 @@ func TestConfigGitCredentials(t *testing.T) {
 	dir := t.TempDir()
 	write := func(extra string) (Config, error) {
 		p := dir + "/c.json"
-		_ = os.WriteFile(p, []byte(`{`+extra+`"members":[{"identity":"a","token":"t"}]}`), 0o644)
+		_ = os.WriteFile(p, []byte(`{`+extra+`"members":[{"identity":"a","token":"tttttttttttttttttt"}]}`), 0o644)
 		return LoadConfig(p)
 	}
 	t.Setenv("MY_GH_TOKEN", "ghp_abc")

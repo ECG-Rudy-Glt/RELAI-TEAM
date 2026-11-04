@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -10,6 +11,8 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -64,8 +67,15 @@ func LoadConfig(path string) (Config, error) {
 		return Config{}, err
 	}
 	var c Config
-	if err := json.Unmarshal(b, &c); err != nil {
+	// Unknown fields are refused: a typo such as "claim_leas" would otherwise be ignored and the
+	// default silently used.
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&c); err != nil {
 		return Config{}, fmt.Errorf("%s: %w", path, err)
+	}
+	if err := checkRepos(path, c.Repos); err != nil {
+		return Config{}, err
 	}
 	if c.Listen == "" {
 		c.Listen = ":8080"
@@ -94,8 +104,8 @@ func LoadConfig(path string) (Config, error) {
 	if c.ClaimLease == "" {
 		c.ClaimLease = "8h"
 	}
-	if d, err := time.ParseDuration(c.ClaimLease); err != nil || d < 0 {
-		return Config{}, fmt.Errorf("%s: claim_lease must be a duration like 8h, or 0s for claims that never lapse", path)
+	if d, err := time.ParseDuration(c.ClaimLease); err != nil || d < 0 || (d > 0 && d < time.Second) {
+		return Config{}, fmt.Errorf("%s: claim_lease must be a duration of at least 1s like 8h, or 0s for claims that never lapse", path)
 	}
 	if c.FullRefreshInterval == "" {
 		c.FullRefreshInterval = "6h"
@@ -112,8 +122,50 @@ func LoadConfig(path string) (Config, error) {
 	if _, err := c.tokens(); err != nil {
 		return Config{}, fmt.Errorf("%s: %w", path, err)
 	}
+	// Checks for a config file written by hand; the server itself accepts any identity and token
+	// (tests build configs in code).
+	for i, m := range c.Members {
+		if !identityPattern.MatchString(m.Identity) {
+			return Config{}, fmt.Errorf("%s: members[%d]: identity %q must be 1-64 letters, digits, '.', '_', '-' or '@' (it appears in the log and the web page)", path, i, m.Identity)
+		}
+		if m.Token != "" && len(m.Token) < minTokenLength {
+			return Config{}, fmt.Errorf("%s: members[%d] (%s): token is shorter than %d characters; use `relai-server init` to generate one", path, i, m.Identity, minTokenLength)
+		}
+	}
 	return c, nil
 }
+
+// checkRepos refuses an empty list (a server with nothing to show), blank entries, and the same
+// repository declared twice, directly or through a symbolic link.
+func checkRepos(path string, repos []string) error {
+	if len(repos) == 0 {
+		return fmt.Errorf("%s: repos: declare at least one repository (a local path or a clone URL)", path)
+	}
+	seen := map[string]int{}
+	for i, r := range repos {
+		if strings.TrimSpace(r) == "" {
+			return fmt.Errorf("%s: repos[%d] is empty", path, i)
+		}
+		key := r
+		if !strings.Contains(r, "://") && !strings.HasPrefix(r, "git@") {
+			key = filepath.Clean(r)
+			if real, err := filepath.EvalSymlinks(key); err == nil {
+				key = real
+			}
+		}
+		if j, dup := seen[key]; dup {
+			return fmt.Errorf("%s: repos[%d] (%s) is the same repository as repos[%d]: declare it once", path, i, r, j)
+		}
+		seen[key] = i
+	}
+	return nil
+}
+
+// minTokenLength is the shortest plain token accepted. Generated tokens are 48 hex characters;
+// anything much shorter can be guessed.
+const minTokenLength = 16
+
+var identityPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._@-]{0,63}$`)
 
 // GitAuth resolves the git credentials, reading each token from its environment variable. An
 // empty variable is an error here, at startup, rather than an unreadable repo later.
