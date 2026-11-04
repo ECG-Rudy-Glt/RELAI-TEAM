@@ -4,8 +4,8 @@
 It reads the work that already lives in git (Beads tasks, OpenSpec changes), shows it as one live
 board, and lets each person or agent *claim* a task so two of them never start the same one.
 
-It reads Beads, OpenSpec and plain `TODO.md` / `TASKS.md` checklists (unchecked boxes, with a `P0`–`P4` tag
-or heading as the priority; boxes that still say "done" are reported as stale, not shown). Most urgent first,
+It reads Beads, OpenSpec and plain `TODO.md` / `TASKS.md` checklists (at the root or in `docs/`, `doc/`, `documentation/`;
+unchecked boxes, with `[P1]`, `(P1)`, a leading `P1:` or a heading carrying `P1` as the priority; boxes that still say "done" are reported as stale, not shown). Most urgent first,
 on the page and in `board_claim_next`.
 
 No new place to keep tasks: the repos stay the source of truth, the board is a view of them plus a
