@@ -1,0 +1,79 @@
+name: release
+# Every merge to main that carries a feat:, fix: or perf: commit (or a breaking change) since the last tag is
+# released by itself: tests, next version from the conventional commits, tag, then the release with its binaries.
+# docs:, chore:, test:, ci: and refactor: alone do not release. A tag pushed by hand (v*) is released as it is.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - run: go vet ./...
+      - run: go test ./...
+      - name: Decide the version
+        id: v
+        run: |
+          set -eu
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"; echo "release=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ -n "$(git tag --points-at HEAD --list 'v[0-9]*')" ]; then
+            echo "HEAD is already tagged: nothing to release"; echo "release=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          last=$(git tag --list 'v[0-9]*' --sort=-v:refname | head -n1)
+          if [ -z "$last" ]; then base="0.0.0"; range="HEAD"; else base="${last#v}"; range="${last}..HEAD"; fi
+          subjects=$(git log "$range" --format=%s)
+          bodies=$(git log "$range" --format=%b)
+          major=${base%%.*}; rest=${base#*.}; minor=${rest%%.*}; patch=${rest#*.}
+          bump=none
+          if printf '%s\n' "$subjects" | grep -Eq '^(feat|fix|perf|revert)(\([^)]*\))?!:' || printf '%s\n' "$bodies" | grep -q '^BREAKING CHANGE'; then
+            bump=breaking
+          elif printf '%s\n' "$subjects" | grep -Eq '^feat(\([^)]*\))?:'; then
+            bump=minor
+          elif printf '%s\n' "$subjects" | grep -Eq '^(fix|perf|revert)(\([^)]*\))?:'; then
+            bump=patch
+          fi
+          if [ "$bump" = none ]; then
+            echo "no feat/fix/perf commit since ${last:-the start}: nothing to release"; echo "release=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # before 1.0.0 a breaking change raises the minor, as semver allows
+          if [ "$bump" = breaking ]; then if [ "$major" = 0 ]; then bump=minor; else bump=major; fi; fi
+          case "$bump" in
+            major) major=$((major+1)); minor=0; patch=0 ;;
+            minor) minor=$((minor+1)); patch=0 ;;
+            patch) patch=$((patch+1)) ;;
+          esac
+          if [ -z "$last" ]; then major=0; minor=1; patch=0; fi
+          echo "version=v${major}.${minor}.${patch}" >> "$GITHUB_OUTPUT"; echo "release=true" >> "$GITHUB_OUTPUT"
+      - name: Tag
+        if: steps.v.outputs.release == 'true' && github.ref_type != 'tag'
+        run: |
+          git config user.name "github-actions"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ steps.v.outputs.version }}" -m "${{ steps.v.outputs.version }}"
+          git push origin "${{ steps.v.outputs.version }}"
+      - uses: goreleaser/goreleaser-action@v6
+        if: steps.v.outputs.release == 'true'
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GORELEASER_CURRENT_TAG: ${{ steps.v.outputs.version }}
