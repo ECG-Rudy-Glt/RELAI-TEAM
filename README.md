@@ -113,6 +113,21 @@ curl -H 'Authorization: Bearer change-me-1' localhost:8080/items
   of your repos so no root-owned files appear in them. `./data` must be writable by that user too.
 - `RELAI_TEAM_PORT` changes the published port (default 8080). Claims survive `docker compose restart`.
 
+### Tokens in Docker (GitHub, GitLab)
+
+`config.json` never holds a token: it names an environment variable (`token_env`), and the container gets the
+variable from `config/secrets.env`, which `docker compose` loads and git ignores.
+
+```sh
+cp config/secrets.env.example config/secrets.env      # then fill in what you use
+docker compose up -d
+```
+
+Two kinds of token, both optional: the ones for **private repos** declared by clone URL (`git_credentials`), and
+**read-only** ones for **issue mirrors** (`issue_mirrors`, see below). Without compose:
+`docker run --env-file config/secrets.env ...`, or `-e GITHUB_ISSUES_TOKEN` to take it from your shell. A variable that
+`config.json` names but that is empty or missing stops the server at start and says which one.
+
 ### Bare binary
 
 Needs Go 1.21+ (the module pins toolchain 1.26.10, which Go downloads by itself), and `git`, `bd` and `openspec` on `PATH` for the parts you want read.
