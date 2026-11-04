@@ -1,8 +1,11 @@
 package store
 
 import (
+	"bytes"
+	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -113,5 +116,36 @@ func TestCorruptMiddleLineIsAnError(t *testing.T) {
 	_ = os.WriteFile(path, []byte("{\"seq\":1,\"type\":\"repo_declared\"}\nnot json\n{\"seq\":3,\"type\":\"repo_declared\"}\n"), 0o644)
 	if _, err := Replay(path); err == nil {
 		t.Fatal("expected an error for a corrupt line in the middle of the log")
+	}
+}
+
+func TestReplayWarnsAboutUnknownTypesAndNonIncreasingSeq(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.jsonl")
+	body := "{\"seq\":1,\"type\":\"item_claimed\",\"item_id\":\"a/1\",\"identity\":\"bob\"}\n" +
+		"{\"seq\":2,\"type\":\"item_clamed\",\"item_id\":\"a/2\",\"identity\":\"bob\"}\n" +
+		"{\"seq\":2,\"type\":\"item_claimed\",\"item_id\":\"a/3\",\"identity\":\"carol\"}\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	log.SetOutput(&out)
+	defer log.SetOutput(os.Stderr)
+	events, err := Replay(path)
+	if err != nil || len(events) != 3 {
+		t.Fatalf("replay must keep going and keep all lines: %d, %v", len(events), err)
+	}
+	for _, want := range []string{`unknown event type "item_clamed"`, "events.jsonl:3", "does not follow seq 2"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("missing warning %q in %q", want, out.String())
+		}
+	}
+	out.Reset()
+	l, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.Close()
+	if out.Len() != 0 {
+		t.Errorf("Open must not repeat the warnings Replay prints: %q", out.String())
 	}
 }

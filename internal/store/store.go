@@ -66,7 +66,7 @@ func Open(path string) (*Log, error) {
 		lock.Close()
 		return nil, err
 	}
-	events, err := Replay(path)
+	events, err := replay(path, false)
 	if err != nil {
 		lock.Close()
 		return nil, err
@@ -215,7 +215,16 @@ func (l *Log) Close() error {
 }
 
 // Replay reads every event in the log at path, in order. A missing file is an empty log.
-func Replay(path string) ([]Event, error) {
+func Replay(path string) ([]Event, error) { return replay(path, true) }
+
+var knownTypes = map[string]bool{
+	RepoDeclared: true, ItemCreated: true, ItemUpdated: true, ItemRemoved: true, ItemClaimed: true, ItemReleased: true,
+}
+
+// replay reads the log; with warn it reports, without dropping anything, what looks wrong: an
+// event type this version does not know (a typo would silently erase every claim it was meant to
+// record) and a sequence number that does not increase (two writers, or a hand edit).
+func replay(path string, warn bool) ([]Event, error) {
 	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -242,6 +251,14 @@ func Replay(path string) ([]Event, error) {
 			// Tolerated only if it is the last line: a write torn by a crash.
 			bad = fmt.Errorf("%s:%d: %w", path, line, err)
 			continue
+		}
+		if warn {
+			if !knownTypes[e.Type] {
+				log.Printf("WARNING: %s:%d: unknown event type %q (seq %d) is ignored when rebuilding the board", path, line, e.Type, e.Seq)
+			}
+			if n := len(out); n > 0 && e.Seq <= out[n-1].Seq {
+				log.Printf("WARNING: %s:%d: seq %d does not follow seq %d: two servers wrote this journal, or it was edited by hand", path, line, e.Seq, out[n-1].Seq)
+			}
 		}
 		out = append(out, e)
 	}
