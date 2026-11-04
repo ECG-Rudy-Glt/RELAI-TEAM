@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -118,6 +119,41 @@ func (c *Client) release(id string, force bool) (Item, error) {
 	return it, err
 }
 
+// knownRepos returns the ids of the repos the board tracks.
+func (c *Client) knownRepos() ([]string, error) {
+	var repos []struct {
+		ID     string `json:"id"`
+		Source string `json:"source"`
+	}
+	if err := c.do("GET", "/repos", &repos); err != nil {
+		return nil, err
+	}
+	var ids []string
+	for _, r := range repos {
+		if r.ID != "" {
+			ids = append(ids, r.ID)
+		}
+	}
+	return ids, nil
+}
+
+// checkRepo returns an error message when repo is not one the board tracks, naming those that are,
+// so an agent does not read a typo as "nothing to do".
+func (c *Client) checkRepo(repo string) (string, error) {
+	ids, err := c.knownRepos()
+	if err != nil {
+		return "", err
+	}
+	for _, id := range ids {
+		if id == repo {
+			return "", nil
+		}
+	}
+	return fmt.Sprintf("unknown repo %q: the board tracks %s", repo, strings.Join(ids, ", ")), nil
+}
+
+var knownStatuses = []string{"open", "in_progress", "blocked"}
+
 func (c *Client) line(i Item) string {
 	h := "-"
 	if i.Holder != "" {
@@ -125,11 +161,20 @@ func (c *Client) line(i Item) string {
 		if i.Holder == c.who() {
 			h += " (you)"
 			if !i.ExpiresAt.IsZero() {
-				h += " [lapses " + i.ExpiresAt.UTC().Format("15:04Z") + " unless you claim it again]"
+				h += " [lapses " + i.ExpiresAt.UTC().Format("2006-01-02 15:04Z") + " unless you claim it again]"
 			}
 		}
 	}
 	return fmt.Sprintf("%s [%s] holder=%s  %s", i.ID, i.Status, h, i.Title)
+}
+
+func contains(list []string, v string) bool {
+	for _, x := range list {
+		if x == v {
+			return true
+		}
+	}
+	return false
 }
 
 func obj(props map[string]any, required ...string) map[string]any {
@@ -204,11 +249,28 @@ func Tools(c *Client) []Tool {
 			Handler: func(raw json.RawMessage) (string, bool) {
 				var a struct {
 					Repo, Status, Holder string
-					Limit                int
+					Limit                json.RawMessage
 				}
 				_ = json.Unmarshal(raw, &a)
-				if a.Limit <= 0 {
-					a.Limit = 40
+				limit := 40
+				if len(a.Limit) > 0 && string(a.Limit) != "null" {
+					n, err := strconv.Atoi(strings.TrimSpace(string(a.Limit)))
+					if err != nil || n <= 0 {
+						return "limit must be a positive whole number (default 40)", true
+					}
+					limit = n
+				}
+				if a.Status != "" && !contains(knownStatuses, a.Status) {
+					return fmt.Sprintf("unknown status %q: use one of %s", a.Status, strings.Join(knownStatuses, ", ")), true
+				}
+				if a.Repo != "" {
+					msg, err := c.checkRepo(a.Repo)
+					if err != nil {
+						return fail(err)
+					}
+					if msg != "" {
+						return msg, true
+					}
 				}
 				items, err := c.items()
 				if err != nil {
@@ -233,7 +295,7 @@ func Tools(c *Client) []Tool {
 				var b strings.Builder
 				fmt.Fprintf(&b, "%d items\n", len(out))
 				for n, i := range out {
-					if n == a.Limit {
+					if n == limit {
 						fmt.Fprintf(&b, "… %d more (narrow with repo/status/holder)\n", len(out)-n)
 						break
 					}
@@ -292,6 +354,15 @@ func Tools(c *Client) []Tool {
 			Handler: func(raw json.RawMessage) (string, bool) {
 				var a struct{ Repo string }
 				_ = json.Unmarshal(raw, &a)
+				if a.Repo != "" {
+					msg, err := c.checkRepo(a.Repo)
+					if err != nil {
+						return fail(err)
+					}
+					if msg != "" {
+						return msg, true
+					}
+				}
 				items, err := c.items()
 				if err != nil {
 					return fail(err)

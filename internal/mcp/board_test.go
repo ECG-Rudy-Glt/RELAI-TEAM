@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -195,5 +196,39 @@ func TestClaimNextConcurrentAgentsGetDistinctItems(t *testing.T) {
 	}
 	if len(seen) != agents {
 		t.Errorf("distinct items = %d, want %d", len(seen), agents)
+	}
+}
+
+func TestBadArgumentsAreErrorsNotSilentEmptyAnswers(t *testing.T) {
+	h := startServer(t, 2)
+	alice := &Client{BaseURL: h.URL, Token: "alice-token"}
+	for name, c := range map[string]struct{ tool, args, want string }{
+		"unknown status":       {"board_items", `{"status":"bogus"}`, "unknown status"},
+		"unknown repo in list": {"board_items", `{"repo":"nope"}`, `unknown repo "nope"`},
+		"unknown repo in next": {"board_claim_next", `{"repo":"nope"}`, "billing-api"},
+		"negative limit":       {"board_items", `{"limit":-3}`, "positive whole number"},
+		"zero limit":           {"board_items", `{"limit":0}`, "positive whole number"},
+		"string limit":         {"board_items", `{"limit":"x"}`, "positive whole number"},
+	} {
+		txt, isErr := tool(t, alice, c.tool, c.args)
+		if !isErr || !strings.Contains(txt, c.want) {
+			t.Errorf("%s: got isErr=%v %q, want an error mentioning %q", name, isErr, txt, c.want)
+		}
+	}
+	if txt, isErr := tool(t, alice, "board_items", `{"limit":1,"status":"open","repo":"billing-api"}`); isErr || !strings.HasPrefix(txt, "2 items") {
+		t.Errorf("valid arguments refused: %v %q", isErr, txt)
+	}
+	// claim_next must not have claimed anything for the unknown repo.
+	if txt, _ := tool(t, alice, "board_items", `{"holder":"me"}`); !strings.HasPrefix(txt, "0 items") {
+		t.Errorf("an invalid claim_next claimed something: %q", txt)
+	}
+}
+
+func TestLapseTimeIncludesTheDate(t *testing.T) {
+	h := startServer(t, 1)
+	alice := &Client{BaseURL: h.URL, Token: "alice-token"}
+	txt, _ := tool(t, alice, "board_claim", `{"id":"billing-api/bd/b-1"}`)
+	if !regexp.MustCompile(`lapses \d{4}-\d{2}-\d{2} \d{2}:\d{2}Z`).MatchString(txt) {
+		t.Errorf("the lapse time should carry a date: %q", txt)
 	}
 }

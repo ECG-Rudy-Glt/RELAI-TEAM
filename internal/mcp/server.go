@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -60,10 +61,19 @@ func (s *Server) Serve(in io.Reader, out io.Writer) error {
 		defer mu.Unlock()
 		fmt.Fprintf(out, "%s\n", b)
 	}
-	sc := bufio.NewScanner(in)
-	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-	for sc.Scan() {
-		line := sc.Bytes()
+	br := bufio.NewReaderSize(in, 64*1024)
+	for {
+		line, tooLong, err := readLine(br, maxLine)
+		if tooLong {
+			// Answer and keep serving: one oversized request must not end the whole session.
+			write(response{ID: json.RawMessage("null"), Error: &rpcError{-32600, "request larger than 4 MiB, ignored"}})
+		}
+		if err != nil && len(line) == 0 {
+			if err == io.EOF {
+				return nil
+			}
+			return err
+		}
 		if len(line) == 0 {
 			continue
 		}
@@ -79,7 +89,34 @@ func (s *Server) Serve(in io.Reader, out io.Writer) error {
 		}
 		write(response{ID: req.ID, Result: result, Error: rerr})
 	}
-	return sc.Err()
+}
+
+// maxLine is the largest request line accepted.
+const maxLine = 4 * 1024 * 1024
+
+// readLine returns the next line without its newline. A line longer than max is skipped to its end
+// and reported with tooLong, instead of failing the stream the way bufio.Scanner does. At EOF it
+// returns what is left (a last line with no newline) and io.EOF on the call after.
+func readLine(r *bufio.Reader, max int) (line []byte, tooLong bool, err error) {
+	var buf []byte
+	for {
+		chunk, rerr := r.ReadSlice('\n')
+		if !tooLong {
+			if len(buf)+len(chunk) > max+1 {
+				tooLong, buf = true, nil
+			} else {
+				buf = append(buf, chunk...)
+			}
+		}
+		switch rerr {
+		case nil:
+			return bytes.TrimRight(buf, "\r\n"), tooLong, nil
+		case bufio.ErrBufferFull:
+			continue
+		default:
+			return bytes.TrimRight(buf, "\r\n"), tooLong, rerr
+		}
+	}
 }
 
 func (s *Server) handle(req request) (any, *rpcError) {
