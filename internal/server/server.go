@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ECG-Rudy-Glt/RELAI-TEAM/internal/aggregate"
@@ -43,7 +44,18 @@ type Server struct {
 	hub        *hub
 	dmu        sync.Mutex
 	lastDigest string
+
+	refreshMu sync.Mutex  // one refresh at a time (the initial read can overlap the first tick)
+	loading   atomic.Bool // true from SetLoading until the first Refresh has finished
 }
+
+// SetLoading makes the data endpoints answer 503 "loading" until the first Refresh completes, so
+// the process can start listening (and answer /healthz) before a slow first read of many repos.
+func (s *Server) SetLoading() { s.loading.Store(true) }
+
+// CloseStreams ends every open /events stream, so a graceful shutdown does not wait for clients
+// that would never hang up by themselves.
+func (s *Server) CloseStreams() { s.hub.close() }
 
 // New wires a server. agg may use a fake command runner in tests.
 func New(cfg Config, b *board.Board, agg *aggregate.Aggregator) (*Server, error) {
@@ -73,8 +85,11 @@ func New(cfg Config, b *board.Board, agg *aggregate.Aggregator) (*Server, error)
 // change shows up without anyone rebuilding an index. A repo that can't be read this round keeps
 // its items and is reported as unreadable.
 func (s *Server) Refresh() error {
+	s.refreshMu.Lock()
+	defer s.refreshMu.Unlock()
 	err := s.refresh()
 	s.checkChanged()
+	s.loading.Store(false)
 	return err
 }
 
@@ -142,7 +157,8 @@ func (s *Server) Handler() http.Handler {
 
 	root := http.NewServeMux()
 	root.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		// Always 200: the process is alive. "ready" says whether the first read is finished.
+		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "ready": !s.loading.Load()})
 	})
 	root.HandleFunc("GET /board", s.boardPage)
 	root.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
@@ -159,7 +175,11 @@ type ctxKey struct{}
 func (s *Server) authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := r.Header.Get("Authorization")
-		token, ok := strings.CutPrefix(h, "Bearer ")
+		// The scheme name is case-insensitive (RFC 7235); the token itself is compared exactly.
+		token, ok := "", false
+		if len(h) > 7 && strings.EqualFold(h[:7], "Bearer ") {
+			token, ok = h[7:], true
+		}
 		if !ok || token == "" {
 			writeError(w, http.StatusUnauthorized, "missing bearer token")
 			return
@@ -167,6 +187,11 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 		who, ok := s.tokens[sha256.Sum256([]byte(token))]
 		if !ok {
 			writeError(w, http.StatusUnauthorized, "token does not belong to a member of this team")
+			return
+		}
+		if s.loading.Load() {
+			w.Header().Set("Retry-After", "5")
+			writeError(w, http.StatusServiceUnavailable, "loading: the first read of the repos is not finished, retry in a few seconds")
 			return
 		}
 		next.ServeHTTP(w, r.WithContext(withIdentity(r.Context(), who)))

@@ -108,13 +108,22 @@ func run(cfgPath string) error {
 	agg.Workers = cfg.RefreshConcurrency
 	agg.FullRefresh = cfg.FullRefresh()
 	agg.NoCache = cfg.FullRefresh() == 0
+	if f := cfg.FullRefresh(); f < time.Minute {
+		log.Printf("WARNING: full_refresh_interval is %s: every repo is re-read at least that often, and each read of a Beads repo rewrites about 3 MiB on disk. Leave it at the default (%s) unless you are debugging.", f, aggregate.DefaultFullRefresh)
+	}
 	srv, err := server.New(cfg, board.New(events, past), agg)
 	if err != nil {
 		return err
 	}
-	if err := srv.Refresh(); err != nil {
-		log.Printf("initial refresh: %v", err)
-	}
+	// Listen first, read the repos after: with hundreds of repos the first read takes tens of
+	// seconds, during which /healthz must answer (a liveness probe would kill the process).
+	srv.SetLoading()
+	go func() {
+		if err := srv.Refresh(); err != nil {
+			log.Printf("initial refresh: %v", err)
+		}
+		log.Printf("initial read done")
+	}()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -126,12 +135,19 @@ func run(cfgPath string) error {
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				before := agg.Reads()
+				before, safetyBefore := agg.Reads(), agg.SafetyReads()
 				if err := srv.Refresh(); err != nil {
 					log.Printf("refresh: %v", err)
 				}
-				if n := agg.Reads() - before; n > 0 { // quiet when nothing changed
-					log.Printf("refresh: re-read %d repo(s) whose files changed; the rest were unchanged", n)
+				n, safety := agg.Reads()-before, agg.SafetyReads()-safetyBefore
+				if safety > n { // a failed read counts as safety but not as a read
+					safety = n
+				}
+				if changed := n - safety; changed > 0 { // quiet when nothing changed
+					log.Printf("refresh: re-read %d repo(s) whose files changed; the rest were unchanged", changed)
+				}
+				if safety > 0 {
+					log.Printf("refresh: safety re-read of %d repo(s) whose files had not changed (full_refresh_interval %s)", safety, cfg.FullRefresh())
 				}
 			}
 		}
@@ -149,6 +165,7 @@ func run(cfgPath string) error {
 	} else if server.ListensBeyondLoopback(cfg.Listen) {
 		log.Printf("WARNING: listening on %s over plain HTTP: tokens travel in clear. Set tls_cert and tls_key, or put a TLS-terminating proxy in front.", cfg.Listen)
 	}
+	hs.RegisterOnShutdown(srv.CloseStreams)
 	errc := make(chan error, 1)
 	go func() {
 		scheme := "http"

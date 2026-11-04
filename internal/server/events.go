@@ -15,12 +15,16 @@ import (
 // a subscriber waking up and waiting again: at worst two changes merge into one wake-up, which is
 // fine because a notification only says "re-fetch" and carries no data.
 type hub struct {
-	mu  sync.Mutex
-	ch  chan struct{}
-	ver uint64
+	mu   sync.Mutex
+	ch   chan struct{}
+	ver  uint64
+	done chan struct{} // closed on shutdown: every stream returns
+	once sync.Once
 }
 
-func newHub() *hub { return &hub{ch: make(chan struct{})} }
+func newHub() *hub { return &hub{ch: make(chan struct{}), done: make(chan struct{})} }
+
+func (h *hub) close() { h.once.Do(func() { close(h.done) }) }
 
 // wait returns the channel that will be closed by the next change, and the current version.
 func (h *hub) wait() (<-chan struct{}, uint64) {
@@ -93,6 +97,8 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	for {
 		select {
 		case <-r.Context().Done():
+			return
+		case <-s.hub.done:
 			return
 		case <-ch:
 			var ver uint64

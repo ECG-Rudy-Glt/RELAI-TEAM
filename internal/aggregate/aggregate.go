@@ -99,6 +99,8 @@ type Aggregator struct {
 	cache map[string]cacheEntry
 	reads atomic.Uint64
 	hits  atomic.Uint64
+	// safety counts reads done only because FullRefresh had passed, not because anything changed.
+	safety atomic.Uint64
 	// Workers caps how many repos are read concurrently (0 means DefaultWorkers). Each read spawns
 	// bd and openspec, so this bounds how many processes a refresh forks at once.
 	Workers int
@@ -184,6 +186,10 @@ func (a *Aggregator) One(src string) (Repo, error) {
 
 // Reads is how many repos have actually been read (processes spawned) so far.
 func (a *Aggregator) Reads() uint64 { return a.reads.Load() }
+
+// SafetyReads is how many reads were triggered by the FullRefresh safety net rather than by a
+// change in the repo's files.
+func (a *Aggregator) SafetyReads() uint64 { return a.safety.Load() }
 
 // CacheHits is how many reads were skipped because the repo's fingerprint was unchanged.
 func (a *Aggregator) CacheHits() uint64 { return a.hits.Load() }
