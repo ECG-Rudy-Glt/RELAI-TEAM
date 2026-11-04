@@ -22,6 +22,7 @@ import (
 const (
 	KindTask       = "beads-task"
 	KindChangeTask = "openspec-task"
+	KindTodo       = "todo-item" // an unchecked box of TODO.md or TASKS.md
 )
 
 // Item is one unit of work surfaced on the board.
@@ -31,6 +32,8 @@ type Item struct {
 	Kind   string `json:"kind"`
 	Title  string `json:"title"`
 	Status string `json:"status"`
+	// Priority is "P0" (most urgent) to "P4", or empty when the source does not say.
+	Priority string `json:"priority,omitempty"`
 }
 
 // Repo is what was read from one declared repo.
@@ -226,6 +229,15 @@ func (a *Aggregator) read(src string) (Repo, error) {
 		}
 		r.Items = append(r.Items, items...)
 	}
+	for _, name := range todoFiles {
+		if b, err := os.ReadFile(filepath.Join(dir, name)); err == nil {
+			items, note := todoItems(string(b), r.ID, name)
+			r.Items = append(r.Items, items...)
+			if note != "" {
+				r.Notes = append(r.Notes, note)
+			}
+		}
+	}
 	if isDir(filepath.Join(dir, "openspec")) {
 		items, err := a.openspecItems(dir, r.ID)
 		if err != nil {
@@ -246,6 +258,7 @@ func (a *Aggregator) beadsItems(dir, repo string) ([]Item, error) {
 		Title  string `json:"title"`
 		Status string `json:"status"`
 		Type   string `json:"issue_type"`
+		Prio   *int   `json:"priority"`
 	}
 	if err := json.Unmarshal(out, &tasks); err != nil {
 		return nil, fmt.Errorf("bd list: %w", err)
@@ -256,7 +269,7 @@ func (a *Aggregator) beadsItems(dir, repo string) ([]Item, error) {
 			continue
 		}
 		items = append(items, Item{
-			ID: repo + "/bd/" + t.ID, Repo: repo, Kind: KindTask, Title: t.Title, Status: t.Status,
+			ID: repo + "/bd/" + t.ID, Repo: repo, Kind: KindTask, Title: t.Title, Status: t.Status, Priority: prioLabel(t.Prio),
 		})
 	}
 	return items, nil

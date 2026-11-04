@@ -230,7 +230,7 @@ func run(cfgPath string, standby bool) error {
 		if cfg.UsesTLS() {
 			scheme = "https"
 		}
-		log.Printf("relai-server %s listening on %s://%s, %d repos, refresh every %s, web board at /board", version, scheme, cfg.Listen, len(cfg.Repos), interval)
+		log.Printf("relai-server %s listening on %s://%s, %d listed repos + %d discover folder(s), refresh every %s, web board at /board", version, scheme, cfg.Listen, len(cfg.Repos), len(cfg.Discover), interval)
 		if cfg.UsesTLS() {
 			errc <- hs.ListenAndServeTLS(cfg.TLSCert, cfg.TLSKey)
 			return
