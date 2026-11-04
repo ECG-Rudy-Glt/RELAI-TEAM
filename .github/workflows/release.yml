@@ -9,6 +9,7 @@ on:
   workflow_dispatch:
 permissions:
   contents: write
+  packages: write
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
@@ -77,3 +78,27 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GORELEASER_CURRENT_TAG: ${{ steps.v.outputs.version }}
+      # The container image goes to GitHub's registry under the repository owner: ghcr.io/<owner>/relai-team, tagged with
+      # the version and "latest". linux/amd64 only. A new package is private until its visibility is changed once in
+      # the package settings on GitHub.
+      - name: Image name
+        id: img
+        if: steps.v.outputs.release == 'true'
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/relai-team" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+        if: steps.v.outputs.release == 'true'
+      - uses: docker/login-action@v3
+        if: steps.v.outputs.release == 'true'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        if: steps.v.outputs.release == 'true'
+        with:
+          context: .
+          push: true
+          build-args: VERSION=${{ steps.v.outputs.version }}
+          tags: |
+            ${{ steps.img.outputs.name }}:${{ steps.v.outputs.version }}
+            ${{ steps.img.outputs.name }}:latest
