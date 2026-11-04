@@ -25,6 +25,8 @@
 - 2026-11-04 — `GET /changes?since=N` and the `board_changes` tool: what happened since a sequence number, from the journal's `seq`, 2,000 events kept in memory, `complete:false` when too old. Lease expiry has no event, so a lapsed claim is not in the changes. Not measured with real agents yet.
 - 2026-11-04 — Open decisions: a per-identity cap on claims (`RELAI-TEAM-b2o`); `deployment-presets` still deferred.
 
+- 2026-11-04 — `issue_mirrors`: GitHub/GitLab open issues shown as items, read-only (the server never writes to the forge; claims stay in the journal). Bounded polling (min interval 5 m, ETag, first page sorted by update, full re-read every 6 h, 300 issues, back-off on rate limit), token from an environment variable, one host, no cross-host redirect. Tested with fake forges only.
+
 ### Pitfalls
 <!-- Things that cost time once and will again: symptom → cause → what to do. -->
 - `bd init` may make its own commit and touch `.gitignore` → use `--skip-agents --skip-hooks`, then `git reset --soft HEAD~1` and recommit cleanly if it does.

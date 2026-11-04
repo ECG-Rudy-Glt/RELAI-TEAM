@@ -184,6 +184,7 @@ and the two that ran out were told so cleanly.
 | `refresh_concurrency` | `8` | How many changed repos are read at once. |
 | `tls_cert`, `tls_key` | — | PEM files; set both to serve HTTPS (TLS 1.2+), or neither. |
 | `repos` | — | Local paths or clone URLs; at least one. A clone URL is only cloned when its remote HEAD moved. The same repository twice (also through a symlink) is refused, and so is a second repo reusing another's `relai.yaml` `id` (it is shown as unreadable, with the reason). |
+| `issue_mirrors` | — | GitHub or GitLab projects whose open issues appear as items, read-only. See "Issues from GitHub or GitLab". |
 | `members` | — | Identities are 1-64 letters, digits, `.` `_` `-` `@`; a plain `token` is at least 16 characters (`relai-server init` generates 48). `{"identity", "token"}` or `{"identity", "token_sha256"}` (hex SHA-256, so the file holds no plaintext secret), and `"admin": true` to let that member force-release others' items. |
 
 Config is read at startup; restart to change members or repos. Unknown fields are refused (a typo such as `claim_leas` is an error, not a silent default), and `claim_lease` is `0s` or at least `1s`.
@@ -250,6 +251,40 @@ GITHUB_TOKEN=ghp_… relai-server -config config.json       # Docker: put it in 
   are verified strictly.
 - A private repo is cloned only when its remote HEAD moved (`git ls-remote`, no disk writes), like the
   rest of the change-driven refresh.
+
+## Issues from GitHub or GitLab (read-only mirror)
+
+Projects that keep their tasks as GitHub or GitLab issues (no Beads) can still appear on the board:
+
+```json
+{
+  "issue_mirrors": [
+    { "provider": "github", "project": "acme/billing-api", "token_env": "GITHUB_ISSUES_TOKEN" },
+    { "provider": "gitlab", "project": "group/sub/web", "token_env": "GITLAB_ISSUES_TOKEN",
+      "base_url": "https://gitlab.example.com", "repo_id": "web", "interval": "10m" }
+  ]
+}
+```
+
+```sh
+GITHUB_ISSUES_TOKEN=github_pat_… GITLAB_ISSUES_TOKEN=glpat-… relai-server -config config.json   # Docker: config/secrets.env
+```
+
+- **It only reflects the current state.** Open issues become items named `<repo_id>/gh/<number>` (GitHub) or
+  `<repo_id>/gl/<iid>` (GitLab), kind `issue`. Labels `in progress` / `doing` / `wip` make the item `in_progress`,
+  `blocked` makes it `blocked`. Pull requests are left out. **The server never writes to the forge**: a claim lives
+  in the team's own journal and the issue is not assigned, labelled or commented. Closing an issue removes the item.
+- **A read-only token is enough**: a fine-grained GitHub token with *Issues: read* on those repositories, or a GitLab token
+  with `read_api`. It is read from the environment variable, sent only to the configured host over **HTTPS**
+  (plain `http://` is accepted for a loopback test server only), never followed through a redirect to another host,
+  and never printed in a log, an error or an API answer. An empty variable stops the server at start.
+- **It asks politely.** At most one request per `interval` (default 5 minutes, minimum 1 minute), and an unchanged list
+  costs a conditional request (`ETag`, `304`). The list is sorted by last update, so any edit changes the first page;
+  a closed older issue is only noticed at the next full re-read, every 6 hours. At most the 300 most recently updated
+  open issues are shown (`/repos` says so). On a rate limit the mirror stops asking until the limit is over.
+- If the forge cannot be reached, the items already shown stay and `/repos` says why the source is unreadable.
+- `/repos` lists each mirror under its source (`github:acme/billing-api`). `repo_id` must differ between mirrors and from
+  the `id` in any repo's `relai.yaml` (a clash is reported, as for two repos with the same id).
 
 ## HTTPS
 
