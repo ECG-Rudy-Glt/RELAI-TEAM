@@ -260,3 +260,24 @@ func TestBoardChangesGivesACursorAndOnlyWhatIsNew(t *testing.T) {
 		t.Errorf("a negative since must be refused: %q", txt)
 	}
 }
+
+func TestBoardChangesKeepsOneLinePerItem(t *testing.T) {
+	h := startServer(t, 3)
+	alice := &Client{BaseURL: h.URL, Token: "alice-token"}
+	bob := &Client{BaseURL: h.URL, Token: "bob-token"}
+	txt, _ := tool(t, alice, "board_changes", `{}`)
+	m := regexp.MustCompile(`board seq (\d+)`).FindStringSubmatch(txt)
+	for i := 0; i < 5; i++ { // bob takes and frees the same item five times, then takes it a last time
+		tool(t, bob, "board_claim", `{"id":"billing-api/bd/b-1"}`)
+		tool(t, bob, "board_release", `{"id":"billing-api/bd/b-1"}`)
+	}
+	tool(t, bob, "board_claim", `{"id":"billing-api/bd/b-1"}`)
+	tool(t, bob, "board_claim", `{"id":"billing-api/bd/b-2"}`)
+	txt, isErr := tool(t, alice, "board_changes", `{"since":`+m[1]+`}`)
+	if isErr || !strings.Contains(txt, "2 changes") || strings.Count(txt, "b-1") != 1 || !strings.Contains(txt, "b-1 claimed by bob") {
+		t.Errorf("11 events on b-1 and 1 on b-2 should read as 2 lines, b-1 ending 'claimed by bob':\n%s", txt)
+	}
+	if !strings.Contains(txt, "next: board_changes since=") {
+		t.Errorf("the next cursor is missing: %s", txt)
+	}
+}

@@ -159,3 +159,23 @@ func TestChangesSaysWhenTheHistoryIsTooOld(t *testing.T) {
 		t.Errorf("a client at seq 0 must be told to list the board again: complete=%v", obj["complete"])
 	}
 }
+
+func TestChangesNetKeepsTheLastChangeOfEachItem(t *testing.T) {
+	f := newFixture(t)
+	_, cur, _ := f.do("GET", "/changes", "alice-token")
+	seq0 := strconv.FormatInt(int64(cur["seq"].(float64)), 10)
+	for i := 0; i < 4; i++ {
+		f.do("POST", "/items/billing-api%2Fbd%2Fb-1/claim", "alice-token")
+		f.do("POST", "/items/billing-api%2Fbd%2Fb-1/release", "alice-token")
+	}
+	f.do("POST", "/items/billing-api%2Fbd%2Fb-2/claim", "alice-token")
+	_, full, _ := f.do("GET", "/changes?since="+seq0, "bob-token")
+	_, net, _ := f.do("GET", "/changes?net=1&since="+seq0, "bob-token")
+	if len(full["changes"].([]any)) != 9 {
+		t.Fatalf("full changes = %d, want 9", len(full["changes"].([]any)))
+	}
+	ch := net["changes"].([]any)
+	if len(ch) != 2 || ch[0].(map[string]any)["type"] != "item_released" || ch[1].(map[string]any)["type"] != "item_claimed" {
+		t.Errorf("net changes = %v, want b-1's last (released) and b-2's last (claimed)", ch)
+	}
+}

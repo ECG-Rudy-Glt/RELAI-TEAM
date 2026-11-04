@@ -309,18 +309,19 @@ func Tools(c *Client) []Tool {
 			Name: "board_changes",
 			Description: "What happened on the board since a sequence number, in a few lines, instead of listing every item again. " +
 				"Call it with no arguments to get the current seq (and the latest few changes); later call it with since=<that seq> " +
-				"to see only what is new. If it says the history is too old, list the board with board_items once and start over.",
+				"to see only what is new, one line per item (its last change). It pays off on a big board or after much activity; on a board of a " +
+				"few dozen items with little going on, board_items is just as cheap. If it says the history is too old, list the board with board_items once and start over.",
 			InputSchema: obj(map[string]any{"since": map[string]any{"type": "integer", "description": "the seq returned by the previous call"}}),
 			Handler: func(raw json.RawMessage) (string, bool) {
 				var a struct{ Since json.RawMessage }
 				_ = json.Unmarshal(raw, &a)
-				path := "/changes"
+				path := "/changes?net=1"
 				if len(a.Since) > 0 && string(a.Since) != "null" {
 					n, err := strconv.ParseInt(strings.TrimSpace(string(a.Since)), 10, 64)
 					if err != nil || n < 0 {
 						return "since must be a sequence number, 0 or more", true
 					}
-					path += "?since=" + strconv.FormatInt(n, 10)
+					path += "&since=" + strconv.FormatInt(n, 10)
 				}
 				var res struct {
 					Seq      int64 `json:"seq"`

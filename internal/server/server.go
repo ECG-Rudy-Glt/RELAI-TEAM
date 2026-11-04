@@ -303,7 +303,8 @@ type change struct {
 // changes answers "what happened since sequence number N?" so a client that already knows the
 // board does not have to list it again: GET /changes?since=N gives the board's current seq, the
 // changes after N (only for repos this server shows), and complete=false when N is older than the
-// history kept. Without since it gives just the current seq and the latest few changes.
+// history kept. Without since it gives just the current seq and the latest few changes. With net=1 it keeps
+// only the last change of each item.
 func (s *Server) changes(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	since, tail := int64(0), false
@@ -329,6 +330,23 @@ func (s *Server) changes(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, change{Seq: e.Seq, Time: e.Time, Type: e.Type, ItemID: e.ItemID, Repo: e.Repo,
 			Identity: e.Identity, By: e.By, Title: e.Title, Status: e.Status})
+	}
+	// net=1: only the last thing that happened to each item. Claiming and releasing the same item ten times
+	// is one line ("it is free now"), which is what a client coming back needs; the full sequence is
+	// for audit, not for catching up.
+	net := q.Get("net") == "1"
+	if net {
+		last := map[string]int{}
+		for i, c := range out {
+			last[c.ItemID] = i
+		}
+		var merged []change
+		for i, c := range out {
+			if last[c.ItemID] == i {
+				merged = append(merged, c)
+			}
+		}
+		out = merged
 	}
 	limit := 200
 	if tail {

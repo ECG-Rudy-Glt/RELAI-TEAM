@@ -191,3 +191,61 @@ func TestARedirectToAnotherHostIsRefused(t *testing.T) {
 		t.Errorf("redirect followed: err=%v leaked=%v", err, leaked.Load())
 	}
 }
+
+func TestASourceThatNeverSucceededIsNotAskedAtEveryRefresh(t *testing.T) {
+	m, _ := gh(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(500) })
+	m.Src.Interval = time.Minute
+	now := time.Date(2026, 11, 4, 10, 0, 0, 0, time.UTC)
+	m.Now = func() time.Time { return now }
+	for i := 0; i < 7; i++ { // a refresh every second for 7 seconds
+		if _, err := m.Read(); err == nil {
+			t.Fatal("expected the failure to be reported every time")
+		}
+		now = now.Add(time.Second)
+	}
+	if m.Requests() != 1 {
+		t.Errorf("%d requests in 7 s with an interval of 1 min; want 1", m.Requests())
+	}
+	// the wait doubles with each consecutive failure: 1 min, then 2, then 4
+	now = now.Add(time.Minute)
+	m.Read()
+	if m.Requests() != 2 {
+		t.Fatalf("after the interval it should try again: %d", m.Requests())
+	}
+	now = now.Add(90 * time.Second) // 1.5 min < the doubled 2 min
+	m.Read()
+	if m.Requests() != 2 {
+		t.Errorf("second failure should wait 2 min: %d requests", m.Requests())
+	}
+}
+
+func TestAFailureAfterASuccessDoesNotHideBehindTheCache(t *testing.T) {
+	var down atomic.Bool
+	m, _ := gh(t, func(w http.ResponseWriter, r *http.Request) {
+		if down.Load() {
+			w.WriteHeader(500)
+			return
+		}
+		fmt.Fprint(w, ghIssues)
+	})
+	m.Src.Interval = time.Minute
+	now := time.Date(2026, 11, 4, 10, 0, 0, 0, time.UTC)
+	m.Now = func() time.Time { return now }
+	if _, err := m.Read(); err != nil {
+		t.Fatal(err)
+	}
+	down.Store(true)
+	now = now.Add(2 * time.Minute)
+	if _, err := m.Read(); err == nil {
+		t.Fatal("the failure must be reported")
+	}
+	now = now.Add(10 * time.Second)
+	if _, err := m.Read(); err == nil {
+		t.Error("within the back-off the error must still be reported, not the old data as if nothing happened")
+	}
+	down.Store(false)
+	now = now.Add(5 * time.Minute)
+	if r, err := m.Read(); err != nil || len(r.Items) == 0 {
+		t.Errorf("recovery: %v", err)
+	}
+}
