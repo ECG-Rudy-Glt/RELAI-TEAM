@@ -29,7 +29,11 @@ func (a *Aggregator) cached(src, fp string) (Repo, bool) {
 	a.cmu.Lock()
 	defer a.cmu.Unlock()
 	e, ok := a.cache[src]
-	if !ok || e.fp != fp || time.Since(e.at) >= a.fullRefresh() {
+	if !ok || e.fp != fp {
+		return Repo{}, false
+	}
+	if time.Since(e.at) >= a.fullRefresh() {
+		a.safety.Add(1) // unchanged, but trusted for too long: re-read as a precaution
 		return Repo{}, false
 	}
 	return e.repo, true

@@ -269,7 +269,7 @@ func TestLoadConfigValidation(t *testing.T) {
 		_ = os.WriteFile(p, []byte(body), 0o644)
 		return p
 	}
-	cfg, err := LoadConfig(write(`{"repos":["/r"],"members":[{"identity":"a","token":"t"}]}`))
+	cfg, err := LoadConfig(write(`{"repos":["/r"],"members":[{"identity":"a","token":"tttttttttttttttttt"}]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,18 +277,65 @@ func TestLoadConfigValidation(t *testing.T) {
 		t.Errorf("defaults not applied: %+v", cfg)
 	}
 	for name, body := range map[string]string{
-		"no members":     `{"repos":[]}`,
-		"no identity":    `{"members":[{"token":"t"}]}`,
-		"dup identity":   `{"members":[{"identity":"a","token":"t"},{"identity":"a","token":"u"}]}`,
-		"dup token":      `{"members":[{"identity":"a","token":"t"},{"identity":"b","token":"t"}]}`,
-		"both":           `{"members":[{"identity":"a","token":"t","token_sha256":"00"}]}`,
+		"no members":     `{"repos":["/r"]}`,
+		"no identity":    `{"members":[{"token":"tttttttttttttttttt"}]}`,
+		"dup identity":   `{"members":[{"identity":"a","token":"tttttttttttttttttt"},{"identity":"a","token":"uuuuuuuuuuuuuuuuuu"}]}`,
+		"dup token":      `{"members":[{"identity":"a","token":"tttttttttttttttttt"},{"identity":"b","token":"tttttttttttttttttt"}]}`,
+		"both":           `{"members":[{"identity":"a","token":"tttttttttttttttttt","token_sha256":"00"}]}`,
 		"bad sha":        `{"members":[{"identity":"a","token_sha256":"zz"}]}`,
 		"no token":       `{"members":[{"identity":"a"}]}`,
-		"bad interval":   `{"refresh_interval":"soon","members":[{"identity":"a","token":"t"}]}`,
-		"short interval": `{"refresh_interval":"10ms","members":[{"identity":"a","token":"t"}]}`,
+		"bad interval":   `{"refresh_interval":"soon","members":[{"identity":"a","token":"tttttttttttttttttt"}]}`,
+		"short interval": `{"refresh_interval":"10ms","members":[{"identity":"a","token":"tttttttttttttttttt"}]}`,
 	} {
 		if _, err := LoadConfig(write(body)); err == nil {
 			t.Errorf("%s: expected an error", name)
 		}
+	}
+}
+
+func TestLoadConfigRefusesWhatAHandWrittenFileGetsWrong(t *testing.T) {
+	dir := t.TempDir()
+	long := "tttttttttttttttttt"
+	members := `"members":[{"identity":"a","token":"` + long + `"}]`
+	load := func(body string) error {
+		p := filepath.Join(dir, "c.json")
+		_ = os.WriteFile(p, []byte(body), 0o644)
+		_, err := LoadConfig(p)
+		return err
+	}
+	if err := load(`{"repos":["/r"],` + members + `}`); err != nil {
+		t.Fatalf("a valid config was refused: %v", err)
+	}
+	for name, c := range map[string]struct{ body, want string }{
+		"typo in a field name":  {`{"claim_leas":"1h","repos":["/r"],` + members + `}`, "claim_leas"},
+		"empty repos":           {`{"repos":[],` + members + `}`, "at least one"},
+		"no repos at all":       {`{` + members + `}`, "at least one"},
+		"null repos":            {`{"repos":null,` + members + `}`, "at least one"},
+		"blank repo":            {`{"repos":[""],` + members + `}`, "empty"},
+		"same repo twice":       {`{"repos":["/r","/r/"],` + members + `}`, "same repository"},
+		"short token":           {`{"repos":["/r"],"members":[{"identity":"a","token":"x"}]}`, "shorter"},
+		"identity with newline": {`{"repos":["/r"],"members":[{"identity":"a\nb","token":"` + long + `"}]}`, "identity"},
+		"identity with ansi":    {`{"repos":["/r"],"members":[{"identity":"\u001b[31ma","token":"` + long + `"}]}`, "identity"},
+		"one nanosecond lease":  {`{"claim_lease":"1ns","repos":["/r"],` + members + `}`, "claim_lease"},
+	} {
+		err := load(c.body)
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: err = %v, want one mentioning %q", name, err, c.want)
+		}
+	}
+}
+
+func TestLoadConfigSeesThroughASymlinkedDuplicate(t *testing.T) {
+	root := t.TempDir()
+	real := filepath.Join(root, "repo")
+	_ = os.MkdirAll(real, 0o755)
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skip("no symlinks")
+	}
+	p := filepath.Join(root, "c.json")
+	_ = os.WriteFile(p, []byte(`{"repos":["`+real+`","`+link+`"],"members":[{"identity":"a","token":"tttttttttttttttttt"}]}`), 0o644)
+	if _, err := LoadConfig(p); err == nil || !strings.Contains(err.Error(), "same repository") {
+		t.Errorf("symlink duplicate: %v", err)
 	}
 }

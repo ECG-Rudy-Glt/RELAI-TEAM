@@ -192,7 +192,7 @@ func TestConfigTLSAndLoopback(t *testing.T) {
 		}
 		return p
 	}
-	base := `"repos":["/x"],"members":[{"identity":"a","token":"t"}]`
+	base := `"repos":["/x"],"members":[{"identity":"a","token":"tttttttttttttttttt"}]`
 	if _, err := LoadConfig(write(`{"tls_cert":"c.pem",` + base + `}`)); err == nil || !strings.Contains(err.Error(), "tls_key is missing") {
 		t.Errorf("cert without key: %v", err)
 	}

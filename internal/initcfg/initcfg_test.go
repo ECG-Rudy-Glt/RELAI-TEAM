@@ -13,7 +13,8 @@ import (
 )
 
 func TestGenerate_ConfigLoadsAndOnlyHashesAreStored(t *testing.T) {
-	res, err := Generate(Options{Repos: []string{"/r/a", "/r/b"}, Members: []string{"alice", "agent-1"}, DataDir: "/d"})
+	a, b := t.TempDir(), t.TempDir()
+	res, err := Generate(Options{Repos: []string{a, b}, Members: []string{"alice", "agent-1"}, DataDir: "/d"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,8 +50,8 @@ func TestGenerate_ConfigLoadsAndOnlyHashesAreStored(t *testing.T) {
 }
 
 func TestGenerate_TokensAreRandomAcrossRuns(t *testing.T) {
-	a, _ := Generate(Options{Repos: []string{"/r"}, Members: []string{"x"}})
-	b, _ := Generate(Options{Repos: []string{"/r"}, Members: []string{"x"}})
+	a, _ := Generate(Options{Repos: []string{os.TempDir()}, Members: []string{"x"}})
+	b, _ := Generate(Options{Repos: []string{os.TempDir()}, Members: []string{"x"}})
 	if a.Members[0].Token == b.Members[0].Token {
 		t.Error("tokens repeat between runs")
 	}
@@ -59,16 +60,16 @@ func TestGenerate_TokensAreRandomAcrossRuns(t *testing.T) {
 func TestGenerate_Validation(t *testing.T) {
 	for name, o := range map[string]Options{
 		"no repos":          {Members: []string{"a"}},
-		"no members":        {Repos: []string{"/r"}},
-		"bad identity":      {Repos: []string{"/r"}, Members: []string{"a b"}},
-		"duplicate":         {Repos: []string{"/r"}, Members: []string{"a", "a"}},
-		"quote in identity": {Repos: []string{"/r"}, Members: []string{`a"b`}},
+		"no members":        {Repos: []string{os.TempDir()}},
+		"bad identity":      {Repos: []string{os.TempDir()}, Members: []string{"a b"}},
+		"duplicate":         {Repos: []string{os.TempDir()}, Members: []string{"a", "a"}},
+		"quote in identity": {Repos: []string{os.TempDir()}, Members: []string{`a"b`}},
 	} {
 		if _, err := Generate(o); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
 	}
-	if _, err := Generate(Options{Repos: []string{"/r"}, Members: []string{"a"}, Rand: bytes.NewReader(nil)}); err == nil {
+	if _, err := Generate(Options{Repos: []string{os.TempDir()}, Members: []string{"a"}, Rand: bytes.NewReader(nil)}); err == nil {
 		t.Error("a failing random source must be an error, not a weak token")
 	}
 }
@@ -102,5 +103,14 @@ func TestScan_FindsOnlyRepoWithSomethingToShow(t *testing.T) {
 	}
 	if _, err := Scan(filepath.Join(root, "missing")); err == nil {
 		t.Error("scanning a missing folder should fail")
+	}
+}
+
+func TestGenerate_RefusesARepoThatDoesNotExist(t *testing.T) {
+	if _, err := Generate(Options{Repos: []string{"/nonexistent/a"}, Members: []string{"x"}}); err == nil {
+		t.Error("a missing local path was written into the config")
+	}
+	if _, err := Generate(Options{Repos: []string{"https://example.com/a.git"}, Members: []string{"x"}}); err != nil {
+		t.Errorf("a clone URL must be accepted: %v", err)
 	}
 }

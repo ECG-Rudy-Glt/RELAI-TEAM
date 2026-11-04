@@ -34,7 +34,7 @@ Relai itself stays git-only with no server, and never depends on this project.
   crashed agent never blocks a task, and an administrator can free one by hand.
 - **Agent tools (MCP).** `relai-mcp` gives Claude Code, Codex and other MCP clients five tools to
   list, claim and release work, as their own identity.
-- **Claims survive restarts.** An append-only event log (`events.jsonl`), no database to run.
+- **Claims survive restarts.** An append-only event log (`events.jsonl`), no database to run. A write that fails half way (disk full) is cut off, and a line that is not a valid event is moved to `events.jsonl.rejected` with a warning instead of stopping the server.
 - **Per-person tokens, optional HTTPS.** Every request is authenticated as a declared team member;
   set a certificate and key and the server speaks HTTPS itself.
 - **Honest about gaps.** A repo the server cannot read is reported as unreadable, never silently
@@ -115,7 +115,7 @@ curl -H 'Authorization: Bearer change-me-1' localhost:8080/items
 
 ### Bare binary
 
-Needs Go 1.23+, and `git`, `bd` and `openspec` on `PATH` for the parts you want read.
+Needs Go 1.21+ (the module pins toolchain 1.26.10, which Go downloads by itself), and `git`, `bd` and `openspec` on `PATH` for the parts you want read.
 
 ```sh
 go build -o relai-server ./cmd/relai-server
@@ -161,6 +161,7 @@ environment variables are `RELAI_TEAM_URL` and `RELAI_TEAM_TOKEN`. As a project 
 | `board_claim` | Claim one item. If someone holds it, the answer names them: pick other work. Claiming your own item again renews it; your items show when their claim lapses. |
 | `board_release` | Release an item you hold. Administrators can pass `force` to free someone else's (a crashed agent's, say). |
 | `board_claim_next` | Claim the first unclaimed, non-blocked item (optionally in one repo). Safe when many agents ask at once. |
+| `board_changes` | What happened since a sequence number, in a few lines instead of listing every item again. Call it once for the number, then with `since=<number>`. |
 
 Refusals come back as ordinary tool results, not crashes, so an agent just moves on.
 The token lives in the client's MCP config: treat that file like any other secret.
@@ -182,10 +183,10 @@ and the two that ran out were told so cleanly.
 | `full_refresh_interval` | `6h` | Longest an *unchanged* repo is trusted before being read again anyway (safety net). `0s` reads every repo every cycle: expensive, see below. |
 | `refresh_concurrency` | `8` | How many changed repos are read at once. |
 | `tls_cert`, `tls_key` | — | PEM files; set both to serve HTTPS (TLS 1.2+), or neither. |
-| `repos` | — | Local paths or clone URLs. A clone URL is only cloned when its remote HEAD moved. |
-| `members` | — | `{"identity", "token"}` or `{"identity", "token_sha256"}` (hex SHA-256, so the file holds no plaintext secret), and `"admin": true` to let that member force-release others' items. |
+| `repos` | — | Local paths or clone URLs; at least one. A clone URL is only cloned when its remote HEAD moved. The same repository twice (also through a symlink) is refused, and so is a second repo reusing another's `relai.yaml` `id` (it is shown as unreadable, with the reason). |
+| `members` | — | Identities are 1-64 letters, digits, `.` `_` `-` `@`; a plain `token` is at least 16 characters (`relai-server init` generates 48). `{"identity", "token"}` or `{"identity", "token_sha256"}` (hex SHA-256, so the file holds no plaintext secret), and `"admin": true` to let that member force-release others' items. |
 
-Config is read at startup; restart to change members or repos.
+Config is read at startup; restart to change members or repos. Unknown fields are refused (a typo such as `claim_leas` is an error, not a silent default), and `claim_lease` is `0s` or at least `1s`.
 
 ## HTTP API
 
@@ -193,7 +194,7 @@ All routes except `/healthz` need `Authorization: Bearer <token>`.
 
 | Route | Result |
 |---|---|
-| `GET /healthz` | `{"status":"ok"}` (no auth) |
+| `GET /healthz` | `{"status":"ok","ready":true}` (no auth). The server listens before the first read of the repos: until it finishes, `ready` is `false` and the other routes answer `503` with `Retry-After`. |
 | `GET /me` | Your identity. |
 | `GET /repos` | Declared repos with `readable`, `items`, `notes`. |
 | `GET /repos/{repo}/items` | Items of one repo; `404 repo not tracked` if undeclared. |
@@ -201,6 +202,7 @@ All routes except `/healthz` need `Authorization: Bearer <token>`.
 | `POST /items/{id}/claim` | `200` with you as holder and `expires_at`; `409` + current holder if taken. Claiming an item you already hold **renews** it. |
 | `POST /items/{id}/release` | `200`; `409` if someone else holds it. Add `?force=true` as an administrator to free an item someone else holds (`403` for anyone else; the log records who did it). |
 | `GET /events` | Server-Sent Events stream: one `change` event whenever the board changes (no board data in it: re-fetch `/items`). |
+| `GET /changes?since=N` | What happened after sequence number N (claims, releases, new or changed items), the current `seq`, and `complete: false` when N is older than the 2,000 events kept (then list `/items` again). Without `since`: the current `seq` and the latest 10. |
 | `GET /board` | The web board (public, no data in the page). |
 
 Item IDs contain slashes (`auth-service/bd/auth-service-0p2`): **URL-encode them** in the path
@@ -279,7 +281,7 @@ to heat an NVMe drive to 80 °C. So relai-team never polls Beads blindly:
 - A clone URL is checked with `git ls-remote` (no disk writes) and cloned only when its HEAD moved.
 - `full_refresh_interval` (default 6 h) re-reads every repo anyway, in case something changed that the
   fingerprint cannot see. A repo whose Beads reading fails is not retried every cycle.
-- The server logs `refresh: re-read N repo(s)…` only when it actually read something. If you see that
+- The server logs `refresh: re-read N repo(s) whose files changed` only when something changed, and `refresh: safety re-read of N repo(s)` when the `full_refresh_interval` net re-read repos whose files had not changed. A `full_refresh_interval` under one minute prints a warning at start. If you see that
   line constantly, something is rewriting those repos' files.
 
 Setting `full_refresh_interval` to `0s` turns all of this off. Do not leave it on a laptop.
@@ -288,7 +290,7 @@ Setting `full_refresh_interval` to `0s` turns all of this off. Do not leave it o
 
 - **Claims live in the server's log, not in Beads.** A `bd update --claim` done by hand is not seen
   as a claim on the board.
-- **Single instance.** State is held in memory and one log file; do not run two servers on one log.
+- **Single instance.** State is held in memory and one log file; a second server on the same `data_dir` is refused (an exclusive lock on `events.jsonl.lock`; not enforced on Windows).
 - **Static tokens.** Git tokens and member tokens do not rotate by themselves: change them and restart.
 - **The web board is read-only**, and protected by the same tokens: use HTTPS for anything beyond a
   private network.

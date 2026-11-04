@@ -46,6 +46,12 @@ func Generate(o Options) (Result, error) {
 	if len(o.Repos) == 0 {
 		return Result{}, errors.New("no repos to track: pass --repos a,b or --scan <folder>")
 	}
+	for _, r := range o.Repos {
+		isURL := strings.Contains(r, "://") || strings.HasPrefix(r, "git@")
+		if st, err := os.Stat(r); !isURL && (err != nil || !st.IsDir()) {
+			return Result{}, fmt.Errorf("repo %q is not a directory on this machine: check the path (clone URLs are fine too)", r)
+		}
+	}
 	if len(o.Members) == 0 {
 		return Result{}, errors.New("at least one member is required")
 	}

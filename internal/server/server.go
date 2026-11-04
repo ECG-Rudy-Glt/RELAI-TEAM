@@ -7,10 +7,14 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"github.com/ECG-Rudy-Glt/RELAI-TEAM/internal/store"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ECG-Rudy-Glt/RELAI-TEAM/internal/aggregate"
@@ -43,7 +47,18 @@ type Server struct {
 	hub        *hub
 	dmu        sync.Mutex
 	lastDigest string
+
+	refreshMu sync.Mutex  // one refresh at a time (the initial read can overlap the first tick)
+	loading   atomic.Bool // true from SetLoading until the first Refresh has finished
 }
+
+// SetLoading makes the data endpoints answer 503 "loading" until the first Refresh completes, so
+// the process can start listening (and answer /healthz) before a slow first read of many repos.
+func (s *Server) SetLoading() { s.loading.Store(true) }
+
+// CloseStreams ends every open /events stream, so a graceful shutdown does not wait for clients
+// that would never hang up by themselves.
+func (s *Server) CloseStreams() { s.hub.close() }
 
 // New wires a server. agg may use a fake command runner in tests.
 func New(cfg Config, b *board.Board, agg *aggregate.Aggregator) (*Server, error) {
@@ -73,13 +88,29 @@ func New(cfg Config, b *board.Board, agg *aggregate.Aggregator) (*Server, error)
 // change shows up without anyone rebuilding an index. A repo that can't be read this round keeps
 // its items and is reported as unreadable.
 func (s *Server) Refresh() error {
+	s.refreshMu.Lock()
+	defer s.refreshMu.Unlock()
 	err := s.refresh()
 	s.checkChanged()
+	s.loading.Store(false)
 	return err
 }
 
 func (s *Server) refresh() error {
-	repos, skipped := s.agg.All(s.declared)
+	read, skipped := s.agg.All(s.declared)
+	// Two repos with the same relai.yaml id would share item ids, and a claim on one would show
+	// on the other. The first declared keeps the id; the others are reported as unreadable, with
+	// the reason, until one of them changes its id.
+	repos := read[:0:0]
+	firstWithID := map[string]string{}
+	for _, r := range read {
+		if other, dup := firstWithID[r.ID]; dup && r.ID != "" {
+			skipped = append(skipped, aggregate.Skip{Source: r.Source, Reason: fmt.Sprintf("id %q is already used by %s: give each repo its own id in relai.yaml", r.ID, other)})
+			continue
+		}
+		firstWithID[r.ID] = r.Source
+		repos = append(repos, r)
+	}
 	refs := make([]board.RepoRef, 0, len(repos))
 	for _, r := range repos {
 		refs = append(refs, board.RepoRef{ID: r.ID, Source: r.Source})
@@ -139,10 +170,12 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("POST /items/{id}/claim", s.claim)
 	api.HandleFunc("POST /items/{id}/release", s.release)
 	api.HandleFunc("GET /events", s.events)
+	api.HandleFunc("GET /changes", s.changes)
 
 	root := http.NewServeMux()
 	root.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		// Always 200: the process is alive. "ready" says whether the first read is finished.
+		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "ready": !s.loading.Load()})
 	})
 	root.HandleFunc("GET /board", s.boardPage)
 	root.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
@@ -159,7 +192,11 @@ type ctxKey struct{}
 func (s *Server) authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := r.Header.Get("Authorization")
-		token, ok := strings.CutPrefix(h, "Bearer ")
+		// The scheme name is case-insensitive (RFC 7235); the token itself is compared exactly.
+		token, ok := "", false
+		if len(h) > 7 && strings.EqualFold(h[:7], "Bearer ") {
+			token, ok = h[7:], true
+		}
 		if !ok || token == "" {
 			writeError(w, http.StatusUnauthorized, "missing bearer token")
 			return
@@ -167,6 +204,11 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 		who, ok := s.tokens[sha256.Sum256([]byte(token))]
 		if !ok {
 			writeError(w, http.StatusUnauthorized, "token does not belong to a member of this team")
+			return
+		}
+		if s.loading.Load() {
+			w.Header().Set("Retry-After", "5")
+			writeError(w, http.StatusServiceUnavailable, "loading: the first read of the repos is not finished, retry in a few seconds")
 			return
 		}
 		next.ServeHTTP(w, r.WithContext(withIdentity(r.Context(), who)))
@@ -219,6 +261,60 @@ func (s *Server) items(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, nonNil(out))
+}
+
+// change is one thing that happened on the board, as clients see it.
+type change struct {
+	Seq      int64     `json:"seq"`
+	Time     time.Time `json:"time"`
+	Type     string    `json:"type"` // item_created, item_updated, item_removed, item_claimed, item_released
+	ItemID   string    `json:"item_id"`
+	Repo     string    `json:"repo,omitempty"`
+	Identity string    `json:"identity,omitempty"`
+	By       string    `json:"by,omitempty"`
+	Title    string    `json:"title,omitempty"`
+	Status   string    `json:"status,omitempty"`
+}
+
+// changes answers "what happened since sequence number N?" so a client that already knows the
+// board does not have to list it again: GET /changes?since=N gives the board's current seq, the
+// changes after N (only for repos this server shows), and complete=false when N is older than the
+// history kept. Without since it gives just the current seq and the latest few changes.
+func (s *Server) changes(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	since, tail := int64(0), false
+	if v := q.Get("since"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 0 {
+			writeError(w, http.StatusBadRequest, "since must be a sequence number, 0 or more")
+			return
+		}
+		since = n
+	} else {
+		tail = true
+	}
+	events, seq, complete := s.board.Changes(since)
+	visible := s.visibleRepos()
+	out := []change{}
+	for _, e := range events {
+		if e.Type == store.RepoDeclared || e.ItemID == "" {
+			continue
+		}
+		if _, ok := visible[e.Repo]; !ok {
+			continue
+		}
+		out = append(out, change{Seq: e.Seq, Time: e.Time, Type: e.Type, ItemID: e.ItemID, Repo: e.Repo,
+			Identity: e.Identity, By: e.By, Title: e.Title, Status: e.Status})
+	}
+	limit := 200
+	if tail {
+		limit = 10
+	}
+	truncated := false
+	if len(out) > limit {
+		out, truncated = out[len(out)-limit:], true
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"seq": seq, "complete": complete && !(truncated && !tail), "changes": out})
 }
 
 func (s *Server) item(w http.ResponseWriter, r *http.Request) {

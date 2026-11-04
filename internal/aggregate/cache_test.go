@@ -134,6 +134,9 @@ func TestCache_SafetyNetRereadsAfterFullRefresh(t *testing.T) {
 	if c.bd.Load() != 2 {
 		t.Errorf("bd ran %d times, want 2 after FullRefresh elapsed", c.bd.Load())
 	}
+	if a.SafetyReads() != 1 {
+		t.Errorf("SafetyReads = %d, want 1: the re-read was the safety net, not a change", a.SafetyReads())
+	}
 }
 
 func TestCache_NoLastTouchedStillOnlyReadOnce(t *testing.T) {

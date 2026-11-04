@@ -15,7 +15,7 @@ work on together: the rules below are the same for both.
 
 ## Set up
 
-You need Go 1.23+, `git`, and for the full test and demo experience `bd` ([Beads](https://github.com/steveyegge/beads))
+You need Go 1.21+ (the module pins toolchain 1.26.10, which Go downloads by itself), `git`, and for the full test and demo experience `bd` ([Beads](https://github.com/steveyegge/beads))
 and `openspec` (Node 22.12+). Docker is only needed to test the image.
 
 ```sh

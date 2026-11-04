@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -118,6 +119,41 @@ func (c *Client) release(id string, force bool) (Item, error) {
 	return it, err
 }
 
+// knownRepos returns the ids of the repos the board tracks.
+func (c *Client) knownRepos() ([]string, error) {
+	var repos []struct {
+		ID     string `json:"id"`
+		Source string `json:"source"`
+	}
+	if err := c.do("GET", "/repos", &repos); err != nil {
+		return nil, err
+	}
+	var ids []string
+	for _, r := range repos {
+		if r.ID != "" {
+			ids = append(ids, r.ID)
+		}
+	}
+	return ids, nil
+}
+
+// checkRepo returns an error message when repo is not one the board tracks, naming those that are,
+// so an agent does not read a typo as "nothing to do".
+func (c *Client) checkRepo(repo string) (string, error) {
+	ids, err := c.knownRepos()
+	if err != nil {
+		return "", err
+	}
+	for _, id := range ids {
+		if id == repo {
+			return "", nil
+		}
+	}
+	return fmt.Sprintf("unknown repo %q: the board tracks %s", repo, strings.Join(ids, ", ")), nil
+}
+
+var knownStatuses = []string{"open", "in_progress", "blocked"}
+
 func (c *Client) line(i Item) string {
 	h := "-"
 	if i.Holder != "" {
@@ -125,11 +161,20 @@ func (c *Client) line(i Item) string {
 		if i.Holder == c.who() {
 			h += " (you)"
 			if !i.ExpiresAt.IsZero() {
-				h += " [lapses " + i.ExpiresAt.UTC().Format("15:04Z") + " unless you claim it again]"
+				h += " [lapses " + i.ExpiresAt.UTC().Format("2006-01-02 15:04Z") + " unless you claim it again]"
 			}
 		}
 	}
 	return fmt.Sprintf("%s [%s] holder=%s  %s", i.ID, i.Status, h, i.Title)
+}
+
+func contains(list []string, v string) bool {
+	for _, x := range list {
+		if x == v {
+			return true
+		}
+	}
+	return false
 }
 
 func obj(props map[string]any, required ...string) map[string]any {
@@ -146,7 +191,8 @@ const instructions = "This is the team board: work items from several repos, eac
 	"person or agent. Before you start a task, claim it (board_claim or board_claim_next); if the " +
 	"claim is refused, someone else is on it, so pick other work. Release what you will not finish. " +
 	"A claim lapses after a while (the time is shown on your items): claim the item again to renew it " +
-	"while you are still working; if you stop, it frees itself."
+	"while you are still working; if you stop, it frees itself. To catch up on a board you already know, " +
+	"call board_changes with the seq it gave you last time instead of listing every item again."
 
 // Instructions is sent to the client at initialize time.
 func Instructions() string { return instructions }
@@ -204,11 +250,28 @@ func Tools(c *Client) []Tool {
 			Handler: func(raw json.RawMessage) (string, bool) {
 				var a struct {
 					Repo, Status, Holder string
-					Limit                int
+					Limit                json.RawMessage
 				}
 				_ = json.Unmarshal(raw, &a)
-				if a.Limit <= 0 {
-					a.Limit = 40
+				limit := 40
+				if len(a.Limit) > 0 && string(a.Limit) != "null" {
+					n, err := strconv.Atoi(strings.TrimSpace(string(a.Limit)))
+					if err != nil || n <= 0 {
+						return "limit must be a positive whole number (default 40)", true
+					}
+					limit = n
+				}
+				if a.Status != "" && !contains(knownStatuses, a.Status) {
+					return fmt.Sprintf("unknown status %q: use one of %s", a.Status, strings.Join(knownStatuses, ", ")), true
+				}
+				if a.Repo != "" {
+					msg, err := c.checkRepo(a.Repo)
+					if err != nil {
+						return fail(err)
+					}
+					if msg != "" {
+						return msg, true
+					}
 				}
 				items, err := c.items()
 				if err != nil {
@@ -233,13 +296,78 @@ func Tools(c *Client) []Tool {
 				var b strings.Builder
 				fmt.Fprintf(&b, "%d items\n", len(out))
 				for n, i := range out {
-					if n == a.Limit {
+					if n == limit {
 						fmt.Fprintf(&b, "… %d more (narrow with repo/status/holder)\n", len(out)-n)
 						break
 					}
 					b.WriteString(c.line(i) + "\n")
 				}
 				return strings.TrimRight(b.String(), "\n"), false
+			},
+		},
+		{
+			Name: "board_changes",
+			Description: "What happened on the board since a sequence number, in a few lines, instead of listing every item again. " +
+				"Call it with no arguments to get the current seq (and the latest few changes); later call it with since=<that seq> " +
+				"to see only what is new. If it says the history is too old, list the board with board_items once and start over.",
+			InputSchema: obj(map[string]any{"since": map[string]any{"type": "integer", "description": "the seq returned by the previous call"}}),
+			Handler: func(raw json.RawMessage) (string, bool) {
+				var a struct{ Since json.RawMessage }
+				_ = json.Unmarshal(raw, &a)
+				path := "/changes"
+				if len(a.Since) > 0 && string(a.Since) != "null" {
+					n, err := strconv.ParseInt(strings.TrimSpace(string(a.Since)), 10, 64)
+					if err != nil || n < 0 {
+						return "since must be a sequence number, 0 or more", true
+					}
+					path += "?since=" + strconv.FormatInt(n, 10)
+				}
+				var res struct {
+					Seq      int64 `json:"seq"`
+					Complete bool  `json:"complete"`
+					Changes  []struct {
+						Seq      int64  `json:"seq"`
+						Type     string `json:"type"`
+						ItemID   string `json:"item_id"`
+						Identity string `json:"identity"`
+						By       string `json:"by"`
+						Title    string `json:"title"`
+						Status   string `json:"status"`
+					} `json:"changes"`
+				}
+				if err := c.do("GET", path, &res); err != nil {
+					return fail(err)
+				}
+				if !res.Complete {
+					return fmt.Sprintf("board seq %d. Your history is too old to replay: list the board with board_items once, then use since=%d from here on.", res.Seq, res.Seq), false
+				}
+				me := c.who()
+				var b strings.Builder
+				fmt.Fprintf(&b, "board seq %d, %d changes\n", res.Seq, len(res.Changes))
+				for _, ch := range res.Changes {
+					who := ch.Identity
+					if who == me && who != "" {
+						who += " (you)"
+					}
+					switch ch.Type {
+					case "item_claimed":
+						fmt.Fprintf(&b, "#%d %s claimed by %s\n", ch.Seq, ch.ItemID, who)
+					case "item_released":
+						if ch.By != "" {
+							fmt.Fprintf(&b, "#%d %s released (was %s, freed by %s)\n", ch.Seq, ch.ItemID, who, ch.By)
+						} else {
+							fmt.Fprintf(&b, "#%d %s released by %s\n", ch.Seq, ch.ItemID, who)
+						}
+					case "item_created":
+						fmt.Fprintf(&b, "#%d %s new [%s] %s\n", ch.Seq, ch.ItemID, ch.Status, ch.Title)
+					case "item_updated":
+						fmt.Fprintf(&b, "#%d %s now [%s] %s\n", ch.Seq, ch.ItemID, ch.Status, ch.Title)
+					case "item_removed":
+						fmt.Fprintf(&b, "#%d %s gone (closed or removed)\n", ch.Seq, ch.ItemID)
+					}
+				}
+				fmt.Fprintf(&b, "next: board_changes since=%d", res.Seq)
+				return b.String(), false
 			},
 		},
 		{
@@ -292,6 +420,15 @@ func Tools(c *Client) []Tool {
 			Handler: func(raw json.RawMessage) (string, bool) {
 				var a struct{ Repo string }
 				_ = json.Unmarshal(raw, &a)
+				if a.Repo != "" {
+					msg, err := c.checkRepo(a.Repo)
+					if err != nil {
+						return fail(err)
+					}
+					if msg != "" {
+						return msg, true
+					}
+				}
 				items, err := c.items()
 				if err != nil {
 					return fail(err)

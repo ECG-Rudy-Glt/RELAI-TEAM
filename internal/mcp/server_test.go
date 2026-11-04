@@ -82,3 +82,26 @@ func TestUnknownProtocolVersionFallsBack(t *testing.T) {
 		t.Errorf("version = %v, want %v", v, supported[0])
 	}
 }
+
+func TestOversizedLineIsAnsweredAndTheSessionContinues(t *testing.T) {
+	s := &Server{Name: "x", Version: "1", Tools: []Tool{echoTool()}}
+	huge := `{"jsonrpc":"2.0","id":7,"method":"ping","params":{"pad":"` + strings.Repeat("a", 5*1024*1024) + `"}}`
+	res := session(t, s, huge+"\n"+`{"jsonrpc":"2.0","id":8,"method":"ping"}`+"\n")
+	if len(res) != 2 {
+		t.Fatalf("got %d responses, want an error for the big line and a pong: %v", len(res), res)
+	}
+	if e, _ := res[0]["error"].(map[string]any); e == nil || e["code"].(float64) != -32600 {
+		t.Errorf("first response = %v, want a -32600 error", res[0])
+	}
+	if res[1]["id"].(float64) != 8 || res[1]["error"] != nil {
+		t.Errorf("the ping after the big line was not answered: %v", res[1])
+	}
+}
+
+func TestLastLineWithoutNewlineIsStillServed(t *testing.T) {
+	s := &Server{Name: "x", Version: "1", Tools: []Tool{echoTool()}}
+	res := session(t, s, `{"jsonrpc":"2.0","id":1,"method":"ping"}`)
+	if len(res) != 1 {
+		t.Fatalf("got %v", res)
+	}
+}
