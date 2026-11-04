@@ -1,0 +1,44 @@
+version: 2
+
+project_name: relai-team
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: relai-server
+    main: ./cmd/relai-server
+    binary: relai-server
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ldflags: ["-s -w -X main.version={{.Version}}"]
+  - id: relai-mcp
+    main: ./cmd/relai-mcp
+    binary: relai-mcp
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ldflags: ["-s -w -X main.version={{.Version}}"]
+
+archives:
+  - id: relai-team
+    ids: [relai-server, relai-mcp]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  disable: true
+
+release:
+  github:
+    owner: ECG-Rudy-Glt
+    name: RELAI-TEAM
