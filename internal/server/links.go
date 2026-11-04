@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"net/http"
 	"sort"
 	"strings"
@@ -186,5 +187,20 @@ func (s *Server) find(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"capability": r.URL.Query().Get("capability"), "repos": out})
+	res := map[string]any{"capability": r.URL.Query().Get("capability"), "repos": out}
+	if len(out) == 0 {
+		declaring := 0
+		for _, v := range repos {
+			if len(v.Provides)+len(v.Consumes) > 0 {
+				declaring++
+			}
+		}
+		// An empty list is ambiguous: say whether nobody offers it or nobody declares anything yet.
+		if declaring == 0 {
+			res["note"] = "no repo on this board declares provides: or consumes: yet, so an empty answer does not mean the capability is free"
+		} else {
+			res["note"] = fmt.Sprintf("none of the %d repo(s) that declare capabilities provides or consumes it", declaring)
+		}
+	}
+	writeJSON(w, http.StatusOK, res)
 }

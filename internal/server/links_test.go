@@ -1,6 +1,7 @@
 package server
 
 import (
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -141,5 +142,49 @@ func TestFindSaysWhatExistsBeforeSomeoneBuildsIt(t *testing.T) {
 	}
 	if code, _, _ := f.do("GET", "/find", "alice-token"); code != 400 {
 		t.Errorf("find without a capability = %d, want 400", code)
+	}
+}
+
+func TestFindExplainsAnEmptyAnswer(t *testing.T) {
+	f, _ := clusterFixture(t)
+	_, obj, _ := f.do("GET", "/find?capability=nothing.here", "alice-token")
+	if note, _ := obj["note"].(string); !strings.Contains(note, "none of the") {
+		t.Errorf("an empty answer needs a note, got %v", obj)
+	}
+}
+
+func TestClaimsOfAVanishedRepoAreShownAsOrphans(t *testing.T) {
+	f, root := clusterFixture(t)
+	mkProject(t, root, "ghost", "", map[string]string{"relai.yaml": "id: ghost\nsummary: Soon gone.\n", "TODO.md": "- [ ] [P1] Haunt the house\n"})
+	if err := f.srv.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+	_, _, items := f.do("GET", "/items", "alice-token")
+	var id string
+	for _, x := range items {
+		m := x.(map[string]any)
+		if m["repo"] == "ghost" {
+			id = m["id"].(string)
+			if m["priority"] != "P1" {
+				t.Errorf("the TODO.md priority must reach the API, got %v", m)
+			}
+		}
+	}
+	if id == "" {
+		t.Fatalf("the TODO.md item of ghost is not on the board: %v", items)
+	}
+	if code, _, _ := f.do("POST", "/items/"+url.PathEscape(id)+"/claim", "alice-token"); code != 200 {
+		t.Fatalf("claim = %d", code)
+	}
+	if err := os.RemoveAll(filepath.Join(root, "ghost")); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.srv.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+	_, obj, _ := f.do("GET", "/orphans", "alice-token")
+	o, _ := obj["orphaned_claims"].([]any)
+	if len(o) != 1 || o[0].(map[string]any)["id"] != id {
+		t.Errorf("orphans = %v, want the claim on %s", obj, id)
 	}
 }

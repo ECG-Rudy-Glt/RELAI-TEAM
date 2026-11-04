@@ -24,7 +24,9 @@ type Item struct {
 	Kind   string `json:"kind"`
 	Title  string `json:"title"`
 	Status string `json:"status"`
-	Holder string `json:"holder,omitempty"`
+	// Priority is "P0" (most urgent) to "P4"; empty when the source does not say.
+	Priority string `json:"priority,omitempty"`
+	Holder   string `json:"holder,omitempty"`
 	// ExpiresAt is when the holder's claim lapses unless renewed (zero if leases are off).
 	ExpiresAt time.Time `json:"expires_at,omitempty"`
 }
@@ -164,6 +166,9 @@ func (c *Client) line(i Item) string {
 				h += " [lapses " + i.ExpiresAt.UTC().Format("2006-01-02 15:04Z") + " unless you claim it again]"
 			}
 		}
+	}
+	if i.Priority != "" {
+		return fmt.Sprintf("%s [%s %s] holder=%s  %s", i.ID, i.Priority, i.Status, h, i.Title)
 	}
 	return fmt.Sprintf("%s [%s] holder=%s  %s", i.ID, i.Status, h, i.Title)
 }
@@ -571,8 +576,14 @@ func Tools(c *Client) []Tool {
 						cand = append(cand, i)
 					}
 				}
-				// open work first, then work already marked in progress; stable within each group
-				sort.SliceStable(cand, func(x, y int) bool { return (cand[x].Status == "open") && (cand[y].Status != "open") })
+				// most urgent first (an item with no priority comes after P4), then open work before work
+				// already in progress; stable within each group
+				sort.SliceStable(cand, func(x, y int) bool {
+					if px, py := prioRank(cand[x].Priority), prioRank(cand[y].Priority); px != py {
+						return px < py
+					}
+					return (cand[x].Status == "open") && (cand[y].Status != "open")
+				})
 				for _, i := range cand {
 					it, err := c.claim(i.ID)
 					if err == nil {
@@ -626,4 +637,12 @@ func HTTPClient(caFile string) (*http.Client, error) {
 	}
 	c.Transport = &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}, Proxy: http.ProxyFromEnvironment}
 	return c, nil
+}
+
+// prioRank orders "P0".."P4" first and an unknown priority last.
+func prioRank(p string) int {
+	if len(p) == 2 && p[0] == 'P' && p[1] >= '0' && p[1] <= '4' {
+		return int(p[1] - '0')
+	}
+	return 5
 }

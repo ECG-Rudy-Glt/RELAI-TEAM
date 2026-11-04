@@ -46,7 +46,7 @@ func (h *hub) notify() {
 func (s *Server) digest() string {
 	h := sha256.New()
 	for _, it := range s.visibleItems() {
-		fmt.Fprintf(h, "I|%s|%s|%s|%s\n", it.ID, it.Title, it.Status, it.Holder)
+		fmt.Fprintf(h, "I|%s|%s|%s|%s|%s\n", it.ID, it.Title, it.Status, it.Holder, it.Priority)
 	}
 	s.mu.RLock()
 	var repos []string

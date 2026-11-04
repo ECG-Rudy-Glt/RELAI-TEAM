@@ -154,7 +154,7 @@ func (b *Board) apply(e store.Event) {
 			it = &Item{}
 			b.items[e.ItemID] = it
 		}
-		it.ID, it.Repo, it.Kind, it.Title, it.Status = e.ItemID, e.Repo, e.Kind, e.Title, e.Status
+		it.ID, it.Repo, it.Kind, it.Title, it.Status, it.Priority = e.ItemID, e.Repo, e.Kind, e.Title, e.Status, e.Priority
 	case store.ItemRemoved:
 		delete(b.items, e.ItemID)
 	case store.ItemClaimed:
@@ -352,7 +352,7 @@ func (b *Board) MergeAggregated(readRepos []RepoRef, items []aggregate.Item) err
 	seen := map[string]bool{}
 	for _, in := range items {
 		seen[in.ID] = true
-		ev := store.Event{ItemID: in.ID, Repo: in.Repo, Kind: in.Kind, Title: in.Title, Status: in.Status}
+		ev := store.Event{ItemID: in.ID, Repo: in.Repo, Kind: in.Kind, Title: in.Title, Status: in.Status, Priority: in.Priority}
 		var cur aggregate.Item
 		p, wasPlanned := planned[in.ID]
 		ok := wasPlanned
@@ -364,12 +364,12 @@ func (b *Board) MergeAggregated(readRepos []RepoRef, items []aggregate.Item) err
 		switch {
 		case !ok:
 			ev.Type = store.ItemCreated
-		case cur.Title != in.Title || cur.Status != in.Status || cur.Kind != in.Kind:
+		case cur.Title != in.Title || cur.Status != in.Status || cur.Kind != in.Kind || cur.Priority != in.Priority:
 			ev.Type = store.ItemUpdated
 		default:
 			continue
 		}
-		planned[in.ID] = aggregate.Item{ID: in.ID, Repo: in.Repo, Kind: in.Kind, Title: in.Title, Status: in.Status}
+		planned[in.ID] = aggregate.Item{ID: in.ID, Repo: in.Repo, Kind: in.Kind, Title: in.Title, Status: in.Status, Priority: in.Priority}
 		pending = append(pending, ev)
 	}
 	var gone []string

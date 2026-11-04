@@ -37,6 +37,7 @@ type Event struct {
 	Title    string    `json:"title,omitempty"`
 	Kind     string    `json:"kind,omitempty"`
 	Status   string    `json:"status,omitempty"`
+	Priority string    `json:"priority,omitempty"`
 }
 
 // Log appends events to a file, fsyncing after each write so an acknowledged event survives a

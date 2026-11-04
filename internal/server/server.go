@@ -282,6 +282,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /repos", s.repos)
 	api.HandleFunc("GET /repos/{repo}/items", s.repoItems)
 	api.HandleFunc("GET /items", s.items)
+	api.HandleFunc("GET /orphans", s.orphans)
 	api.HandleFunc("GET /items/{id}", s.item)
 	api.HandleFunc("POST /items/{id}/claim", s.claim)
 	api.HandleFunc("POST /items/{id}/release", s.release)
@@ -369,6 +370,25 @@ func (s *Server) repos(w http.ResponseWriter, _ *http.Request) {
 	}
 	s.mu.RUnlock()
 	writeJSON(w, http.StatusOK, out)
+}
+
+// orphans lists the claims held on items of repos the board no longer reads (the repo left the config or
+// the folder). They are not on the board any more, but the journal still holds them: show who and what,
+// without titles, so they can be released or forgotten on purpose.
+func (s *Server) orphans(w http.ResponseWriter, _ *http.Request) {
+	visible := s.visibleRepos()
+	type orphan struct {
+		ID     string `json:"id"`
+		Repo   string `json:"repo"`
+		Holder string `json:"holder"`
+	}
+	out := []orphan{}
+	for _, it := range s.board.Items() {
+		if _, ok := visible[it.Repo]; !ok && it.Holder != "" {
+			out = append(out, orphan{it.ID, it.Repo, it.Holder})
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"orphaned_claims": out})
 }
 
 func (s *Server) repoItems(w http.ResponseWriter, r *http.Request) {
