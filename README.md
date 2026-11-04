@@ -188,6 +188,7 @@ and the two that ran out were told so cleanly.
 | `repos` | — | Local paths or clone URLs; at least one. A clone URL is only cloned when its remote HEAD moved. The same repository twice (also through a symlink) is refused, and so is a second repo reusing another's `relai.yaml` `id` (it is shown as unreadable, with the reason). |
 | `issue_mirrors` | — | GitHub or GitLab projects whose open issues appear as items, read-only. See "Issues from GitHub or GitLab". |
 | `discover` | — | Folders whose git repos join the board automatically: `[{"folder": "/repos", "depth": 1}]` (depth 1-5). Re-scanned at each refresh. See "Repos from a folder". |
+| `auth_failures_per_minute`, `requests_per_minute`, `trust_proxy` | `10`, `600`, `false` | Rate limits: wrong or missing tokens per client address, and requests per member (`0` turns one off); `trust_proxy` reads the client address from the last `X-Forwarded-For` entry, only behind a proxy that sets it. |
 | `members` | — | Identities are 1-64 letters, digits, `.` `_` `-` `@`; a plain `token` is at least 16 characters (`relai-server init` generates 48). `{"identity", "token"}` or `{"identity", "token_sha256"}` (hex SHA-256, so the file holds no plaintext secret), and `"admin": true` to let that member force-release others' items. |
 
 Config is read at startup; restart to change members or repos. Unknown fields are refused (a typo such as `claim_leas` is an error, not a silent default), and `claim_lease` is `0s` or at least `1s`.
@@ -352,8 +353,9 @@ Setting `full_refresh_interval` to `0s` turns all of this off. Do not leave it o
 
 - **Claims live in the server's log, not in Beads.** A `bd update --claim` done by hand is not seen
   as a claim on the board.
-- **Single instance.** State is held in memory and one log file; a second server on the same `data_dir` is refused (an exclusive lock on `events.jsonl.lock`; not enforced on Windows).
-- **Static tokens.** Git tokens and member tokens do not rotate by themselves: change them and restart.
+- **One active instance, with a standby for failover.** State is held in memory and one log file; a second server on the same `data_dir` is refused (an exclusive lock on `events.jsonl.lock`; not enforced on Windows). To survive a crash or a host reboot without a person, run a second process with `relai-server -standby` on the same `data_dir`: it serves nothing and waits for the lock, which the kernel releases when the active one stops or dies, then takes over from the same journal (claims kept). Both need the same `data_dir` on a filesystem that supports `flock` (the same host, or one volume). This is failover, not load balancing: there is still one server at a time.
+- **Tokens do not expire, but they rotate without downtime.** `relai-server token -config config.json -identity alice` adds a new token (shown once) while the old one keeps working; hand it out; run it again with `-drop-old`; apply each step with `kill -HUP <pid>` (members, tokens and request limits reload; repos, address and TLS need a restart). Git and issue-mirror tokens are environment variables: change them and restart.
+- **Rate limits** (see Security): wrong tokens per address and requests per member, in memory per server.
 - **The web board is read-only**, and protected by the same tokens: use HTTPS for anything beyond a
   private network.
 - **First read cost.** Starting the server reads every repo once (about 2.5 s for ten repos on four
@@ -365,7 +367,7 @@ relai-team holds your team's board and the tokens that identify its members, and
 `openspec` inside the repos you declare. In short:
 
 - Every route except `/healthz`, `/board` and `/` needs a member token. `relai-server init` stores only the
-  hashes. There is **no rate limiting and no token rotation** yet.
+  hashes. Wrong tokens are rate limited per address (the token is not looked at past the limit) and each member is capped; tokens rotate without a restart (`relai-server token`, `kill -HUP`).
 - **Use HTTPS** (`tls_cert`/`tls_key`, or a TLS proxy) for anything beyond a private network. Plain HTTP
   sends tokens in clear, and the server warns at startup when it listens beyond loopback.
 - Declared repos are trusted input, and **task titles are untrusted text that reaches AI agents** (through

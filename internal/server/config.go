@@ -43,6 +43,13 @@ type Config struct {
 	Discover []DiscoverConfig `json:"discover"`
 	// IssueMirrors reflects the open issues of GitHub or GitLab projects onto the board, read-only.
 	IssueMirrors []IssueMirrorConfig `json:"issue_mirrors"`
+	// AuthFailuresPerMinute caps wrong or missing tokens per client address (default 10; 0 turns it off). Past
+	// it that address gets 429 without its token being looked at, so a token cannot be guessed by trying.
+	AuthFailuresPerMinute *int `json:"auth_failures_per_minute"`
+	// RequestsPerMinute caps the requests of one member (default 600; 0 turns it off).
+	RequestsPerMinute *int `json:"requests_per_minute"`
+	// TrustProxy takes the client address from the last X-Forwarded-For entry. Only behind a proxy that sets it.
+	TrustProxy bool `json:"trust_proxy"`
 	// TLSCert and TLSKey, both or neither, make the server speak HTTPS.
 	TLSCert string `json:"tls_cert"`
 	TLSKey  string `json:"tls_key"`
@@ -142,6 +149,9 @@ type Member struct {
 	Identity    string `json:"identity"`
 	Token       string `json:"token,omitempty"`
 	TokenSHA256 string `json:"token_sha256,omitempty"`
+	// TokenSHA256s are further hashes valid at the same time: add the new token's hash here, give the new
+	// token out, then remove the old one and reload. Rotation without a moment when nobody can get in.
+	TokenSHA256s []string `json:"token_sha256s,omitempty"`
 	// Admin lets this member force-release items held by others (explicitly, with ?force=true).
 	Admin bool `json:"admin,omitempty"`
 }
@@ -295,6 +305,21 @@ func (c Config) FullRefresh() time.Duration {
 	return d
 }
 
+// AuthFailureLimit and RequestLimit are the effective limits (0 = off).
+func (c Config) AuthFailureLimit() int {
+	if c.AuthFailuresPerMinute == nil {
+		return 10
+	}
+	return *c.AuthFailuresPerMinute
+}
+
+func (c Config) RequestLimit() int {
+	if c.RequestsPerMinute == nil {
+		return 600
+	}
+	return *c.RequestsPerMinute
+}
+
 // UsesTLS reports whether the server should serve HTTPS.
 func (c Config) UsesTLS() bool { return c.TLSCert != "" && c.TLSKey != "" }
 
@@ -341,25 +366,36 @@ func (c Config) tokens() (map[[32]byte]string, error) {
 			return nil, fmt.Errorf("members[%d]: duplicate identity %q", i, m.Identity)
 		}
 		seen[m.Identity] = true
-		var h [32]byte
-		switch {
-		case m.Token != "" && m.TokenSHA256 != "":
+		var hashes [][32]byte
+		if m.Token != "" && m.TokenSHA256 != "" {
 			return nil, fmt.Errorf("members[%d] (%s): give token or token_sha256, not both", i, m.Identity)
-		case m.Token != "":
-			h = sha256.Sum256([]byte(m.Token))
-		case m.TokenSHA256 != "":
-			raw, err := hex.DecodeString(m.TokenSHA256)
+		}
+		if m.Token != "" {
+			hashes = append(hashes, sha256.Sum256([]byte(m.Token)))
+		}
+		for _, hx := range append(func() []string {
+			if m.TokenSHA256 != "" {
+				return []string{m.TokenSHA256}
+			}
+			return nil
+		}(), m.TokenSHA256s...) {
+			raw, err := hex.DecodeString(hx)
 			if err != nil || len(raw) != 32 {
 				return nil, fmt.Errorf("members[%d] (%s): token_sha256 must be 64 hex characters", i, m.Identity)
 			}
+			var h [32]byte
 			copy(h[:], raw)
-		default:
+			hashes = append(hashes, h)
+		}
+		if len(hashes) == 0 {
 			return nil, fmt.Errorf("members[%d] (%s): token or token_sha256 is required", i, m.Identity)
 		}
-		if _, dup := out[h]; dup {
-			return nil, fmt.Errorf("members[%d] (%s): token already used by another member", i, m.Identity)
+		for _, h := range hashes {
+			if _, dup := out[h]; dup {
+				return nil, fmt.Errorf("members[%d] (%s): token already used by another member", i, m.Identity)
+			}
+			out[h] = m.Identity
 		}
-		out[h] = m.Identity
 	}
 	return out, nil
 }
