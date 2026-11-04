@@ -115,7 +115,7 @@ curl -H 'Authorization: Bearer change-me-1' localhost:8080/items
 
 ### Bare binary
 
-Needs Go 1.23+, and `git`, `bd` and `openspec` on `PATH` for the parts you want read.
+Needs Go 1.21+ (the module pins toolchain 1.26.10, which Go downloads by itself), and `git`, `bd` and `openspec` on `PATH` for the parts you want read.
 
 ```sh
 go build -o relai-server ./cmd/relai-server
@@ -183,10 +183,10 @@ and the two that ran out were told so cleanly.
 | `full_refresh_interval` | `6h` | Longest an *unchanged* repo is trusted before being read again anyway (safety net). `0s` reads every repo every cycle: expensive, see below. |
 | `refresh_concurrency` | `8` | How many changed repos are read at once. |
 | `tls_cert`, `tls_key` | — | PEM files; set both to serve HTTPS (TLS 1.2+), or neither. |
-| `repos` | — | Local paths or clone URLs. A clone URL is only cloned when its remote HEAD moved. |
-| `members` | — | `{"identity", "token"}` or `{"identity", "token_sha256"}` (hex SHA-256, so the file holds no plaintext secret), and `"admin": true` to let that member force-release others' items. |
+| `repos` | — | Local paths or clone URLs; at least one. A clone URL is only cloned when its remote HEAD moved. The same repository twice (also through a symlink) is refused, and so is a second repo reusing another's `relai.yaml` `id` (it is shown as unreadable, with the reason). |
+| `members` | — | Identities are 1-64 letters, digits, `.` `_` `-` `@`; a plain `token` is at least 16 characters (`relai-server init` generates 48). `{"identity", "token"}` or `{"identity", "token_sha256"}` (hex SHA-256, so the file holds no plaintext secret), and `"admin": true` to let that member force-release others' items. |
 
-Config is read at startup; restart to change members or repos.
+Config is read at startup; restart to change members or repos. Unknown fields are refused (a typo such as `claim_leas` is an error, not a silent default), and `claim_lease` is `0s` or at least `1s`.
 
 ## HTTP API
 
@@ -194,7 +194,7 @@ All routes except `/healthz` need `Authorization: Bearer <token>`.
 
 | Route | Result |
 |---|---|
-| `GET /healthz` | `{"status":"ok"}` (no auth) |
+| `GET /healthz` | `{"status":"ok","ready":true}` (no auth). The server listens before the first read of the repos: until it finishes, `ready` is `false` and the other routes answer `503` with `Retry-After`. |
 | `GET /me` | Your identity. |
 | `GET /repos` | Declared repos with `readable`, `items`, `notes`. |
 | `GET /repos/{repo}/items` | Items of one repo; `404 repo not tracked` if undeclared. |
@@ -281,7 +281,7 @@ to heat an NVMe drive to 80 °C. So relai-team never polls Beads blindly:
 - A clone URL is checked with `git ls-remote` (no disk writes) and cloned only when its HEAD moved.
 - `full_refresh_interval` (default 6 h) re-reads every repo anyway, in case something changed that the
   fingerprint cannot see. A repo whose Beads reading fails is not retried every cycle.
-- The server logs `refresh: re-read N repo(s)…` only when it actually read something. If you see that
+- The server logs `refresh: re-read N repo(s) whose files changed` only when something changed, and `refresh: safety re-read of N repo(s)` when the `full_refresh_interval` net re-read repos whose files had not changed. A `full_refresh_interval` under one minute prints a warning at start. If you see that
   line constantly, something is rewriting those repos' files.
 
 Setting `full_refresh_interval` to `0s` turns all of this off. Do not leave it on a laptop.

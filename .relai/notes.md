@@ -21,6 +21,10 @@
 - 2026-11-03 — `CLAUDE.md` (`@AGENTS.md`) and a SessionStart hook make Claude Code start from the handoff; verified with real `claude -p` in a fresh clone (1 turn with the hook, 2 without).
 - 2026-11-03 — SECURITY.md and CONTRIBUTING.md added; private vulnerability reporting is NOT enabled on the GitHub repo, so SECURITY.md has a fallback (a detail-free public issue). Enabling it is a repo setting for the owner.
 
+- 2026-11-04 — Hostile test report (`/home/rudy/relai-test-report/`, not in git): 17 tasks labelled `test-report-2026-11-03`. Fixed: journal cut back after a failed write and invalid lines quarantined to `events.jsonl.rejected`; exclusive lock on `events.jsonl.lock`; listen before the first read (503 `loading`, `/healthz` has `ready`); event streams closed on shutdown (52 ms, was 10 s); strict config (unknown fields, no repos, duplicate repos or ids, short tokens, odd identities, `1ns` lease); oversized MCP line answered, MCP arguments validated; one flush per read (`AppendBatch`); Go 1.26.10 (govulncheck 0).
+- 2026-11-04 — `GET /changes?since=N` and the `board_changes` tool: what happened since a sequence number, from the journal's `seq`, 2,000 events kept in memory, `complete:false` when too old. Lease expiry has no event, so a lapsed claim is not in the changes. Not measured with real agents yet.
+- 2026-11-04 — Open decisions: a per-identity cap on claims (`RELAI-TEAM-b2o`); `deployment-presets` still deferred.
+
 ### Pitfalls
 <!-- Things that cost time once and will again: symptom → cause → what to do. -->
 - `bd init` may make its own commit and touch `.gitignore` → use `--skip-agents --skip-hooks`, then `git reset --soft HEAD~1` and recommit cleanly if it does.
@@ -44,6 +48,9 @@
 
 - `bd export` puts the creator's e-mail in every record: never commit a raw export, use `scripts/sync-beads.sh`.
 - Tasks that only exist in `.beads/embeddeddolt` are lost on a new machine: always run `scripts/sync-beads.sh` and commit after changing tasks.
+
+- The `fix/*` and `feat/changes-since-seq` branches of 2026-11-04 are a stack (each on the previous one): merge in that order.
+- `store.Log.Close` releases the journal lock: two `Open`s on one path fail by design, in tests too (use separate temp dirs).
 
 ### Next session
 - 2026-11-03 — `team-server-foundation` and `mcp-team-interface` done, archived, verified (unit + race tests, real stdio session, 3 real Claude Code agents: 3+1+2 of 6 items, no duplicate).
