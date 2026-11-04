@@ -102,3 +102,34 @@ func TestInvalidLinesAreQuarantinedNotFatal(t *testing.T) {
 		t.Fatalf("replay after quarantine: %d events, %v; want 2", len(events), err)
 	}
 }
+
+func TestAppendBatchIsAllOrNothing(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.jsonl")
+	l, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.AppendBatch([]Event{{Type: RepoDeclared, Repo: "a"}, {Type: ItemCreated, ItemID: "a/1", Repo: "a"}}); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := os.Stat(path)
+	restore := limitFileSize(t, st.Size()+150) // room for part of the next batch only
+	var batch []Event
+	for i := 0; i < 10; i++ {
+		batch = append(batch, Event{Type: ItemCreated, ItemID: "a/x", Repo: "a"})
+	}
+	_, err = l.AppendBatch(batch)
+	restore()
+	if err == nil {
+		t.Fatal("the batch should fail on a full disk")
+	}
+	e, err := l.Append(Event{Type: ItemClaimed, ItemID: "a/1", Identity: "bob"})
+	if err != nil || e.Seq != 3 {
+		t.Fatalf("append after a failed batch: %+v %v (want seq 3: the failed batch used no numbers)", e, err)
+	}
+	l.Close()
+	events, err := Replay(path)
+	if err != nil || len(events) != 3 {
+		t.Fatalf("replay: %d events, %v; want 3 and none of the failed batch", len(events), err)
+	}
+}

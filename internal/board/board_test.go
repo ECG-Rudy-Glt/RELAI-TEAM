@@ -182,3 +182,59 @@ func TestClaimNotAppliedWhenPersistFails(t *testing.T) {
 		t.Errorf("unpersisted claim leaked into the board: %+v", it)
 	}
 }
+
+// flushCounter is a log that records how many separate writes the board asked for.
+type flushCounter struct {
+	flushes, events int
+	next            int64
+}
+
+func (f *flushCounter) Append(e store.Event) (store.Event, error) {
+	f.flushes++
+	f.events++
+	f.next++
+	e.Seq = f.next
+	return e, nil
+}
+
+func (f *flushCounter) AppendBatch(es []store.Event) ([]store.Event, error) {
+	f.flushes++
+	out := make([]store.Event, len(es))
+	for i, e := range es {
+		f.events++
+		f.next++
+		e.Seq = f.next
+		out[i] = e
+	}
+	return out, nil
+}
+
+func TestFirstReadOfManyItemsIsOneFlush(t *testing.T) {
+	log := &flushCounter{}
+	b := New(log, nil)
+	var items []aggregate.Item
+	for i := 0; i < 50; i++ {
+		items = append(items, aggregate.Item{ID: fmt.Sprintf("r/%d", i), Repo: "r", Title: "t", Status: "open"})
+	}
+	// the same id twice in one read: the second must be seen as an update only if it differs
+	items = append(items, aggregate.Item{ID: "r/0", Repo: "r", Title: "t", Status: "open"})
+	if err := b.MergeAggregated([]RepoRef{{ID: "r", Source: "/r"}}, items); err != nil {
+		t.Fatal(err)
+	}
+	if log.flushes != 1 || log.events != 51 {
+		t.Errorf("flushes=%d events=%d, want 1 flush for 1 repo + 50 items", log.flushes, log.events)
+	}
+	if len(b.Items()) != 50 {
+		t.Errorf("board has %d items, want 50", len(b.Items()))
+	}
+	if err := b.MergeAggregated([]RepoRef{{ID: "r", Source: "/r"}}, items); err != nil || log.flushes != 1 {
+		t.Errorf("an unchanged read must write nothing: flushes=%d err=%v", log.flushes, err)
+	}
+	// a removal and a change are written together
+	if err := b.MergeAggregated([]RepoRef{{ID: "r", Source: "/r"}}, append(items[1:50:50], aggregate.Item{ID: "r/1", Repo: "r", Title: "changed", Status: "open"})); err != nil {
+		t.Fatal(err)
+	}
+	if log.flushes != 2 {
+		t.Errorf("changes should be one more flush, got %d in total", log.flushes)
+	}
+}

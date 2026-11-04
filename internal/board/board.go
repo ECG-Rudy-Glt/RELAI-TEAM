@@ -139,6 +139,33 @@ func (b *Board) apply(e store.Event) {
 	}
 }
 
+// recordAll appends the events with a single flush when the log supports it, then applies them in
+// order. Nothing is applied if the append fails. Callers hold b.mu.
+func (b *Board) recordAll(events []store.Event) error {
+	if len(events) == 0 {
+		return nil
+	}
+	bl, ok := b.log.(interface {
+		AppendBatch([]store.Event) ([]store.Event, error)
+	})
+	if !ok {
+		for _, e := range events {
+			if err := b.record(e); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	stored, err := bl.AppendBatch(events)
+	if err != nil {
+		return fmt.Errorf("persist %d events: %w", len(events), err)
+	}
+	for _, e := range stored {
+		b.apply(e)
+	}
+	return nil
+}
+
 // record appends e to the log, then applies it. Callers hold b.mu.
 func (b *Board) record(e store.Event) error {
 	stored, err := b.log.Append(e)
@@ -263,20 +290,29 @@ func (b *Board) ForceRelease(id, by string) (Item, error) {
 func (b *Board) MergeAggregated(readRepos []RepoRef, items []aggregate.Item) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	// Work out every event first, then write them with one flush: the first read of hundreds of
+	// repos is thousands of events, and a flush each cost ~100 MiB of disk writes.
+	var pending []store.Event
 	read := map[string]bool{}
 	for _, r := range readRepos {
 		read[r.ID] = true
 		if src, ok := b.repos[r.ID]; !ok || src != r.Source {
-			if err := b.record(store.Event{Type: store.RepoDeclared, Repo: r.ID, Source: r.Source}); err != nil {
-				return err
-			}
+			pending = append(pending, store.Event{Type: store.RepoDeclared, Repo: r.ID, Source: r.Source})
 		}
 	}
+	planned := map[string]aggregate.Item{} // items created or updated by pending events, as they will look
 	seen := map[string]bool{}
 	for _, in := range items {
 		seen[in.ID] = true
 		ev := store.Event{ItemID: in.ID, Repo: in.Repo, Kind: in.Kind, Title: in.Title, Status: in.Status}
-		cur, ok := b.items[in.ID]
+		var cur aggregate.Item
+		p, wasPlanned := planned[in.ID]
+		ok := wasPlanned
+		if wasPlanned {
+			cur = p
+		} else if bi, exists := b.items[in.ID]; exists {
+			cur, ok = bi.Item, true
+		}
 		switch {
 		case !ok:
 			ev.Type = store.ItemCreated
@@ -285,9 +321,8 @@ func (b *Board) MergeAggregated(readRepos []RepoRef, items []aggregate.Item) err
 		default:
 			continue
 		}
-		if err := b.record(ev); err != nil {
-			return err
-		}
+		planned[in.ID] = aggregate.Item{ID: in.ID, Repo: in.Repo, Kind: in.Kind, Title: in.Title, Status: in.Status}
+		pending = append(pending, ev)
 	}
 	var gone []string
 	for id, it := range b.items {
@@ -297,9 +332,7 @@ func (b *Board) MergeAggregated(readRepos []RepoRef, items []aggregate.Item) err
 	}
 	sort.Strings(gone)
 	for _, id := range gone {
-		if err := b.record(store.Event{Type: store.ItemRemoved, ItemID: id, Repo: b.items[id].Repo}); err != nil {
-			return err
-		}
+		pending = append(pending, store.Event{Type: store.ItemRemoved, ItemID: id, Repo: b.items[id].Repo})
 	}
-	return nil
+	return b.recordAll(pending)
 }

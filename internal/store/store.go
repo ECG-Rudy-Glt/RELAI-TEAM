@@ -92,40 +92,60 @@ func Open(path string) (*Log, error) {
 // Append writes e as the next event, assigning its sequence number and time, and returns it as
 // stored.
 func (l *Log) Append(e Event) (Event, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	e.Seq = l.next
-	if e.Time.IsZero() {
-		e.Time = time.Now().UTC()
-	}
-	b, err := json.Marshal(e)
+	out, err := l.AppendBatch([]Event{e})
 	if err != nil {
 		return Event{}, err
+	}
+	return out[0], nil
+}
+
+// AppendBatch writes the events as consecutive lines with one write and one fsync, so a burst of
+// events (the first read of many repos) costs one disk flush instead of one per event. Either all
+// of them are stored or none is: after a failure the file is cut back to its previous end.
+func (l *Log) AppendBatch(events []Event) ([]Event, error) {
+	if len(events) == 0 {
+		return nil, nil
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make([]Event, len(events))
+	var buf bytes.Buffer
+	for i, e := range events {
+		e.Seq = l.next + int64(i)
+		if e.Time.IsZero() {
+			e.Time = time.Now().UTC()
+		}
+		b, err := json.Marshal(e)
+		if err != nil {
+			return nil, err
+		}
+		buf.Write(b)
+		buf.WriteByte('\n')
+		out[i] = e
 	}
 	if l.torn {
 		// A previous write failed and its leftovers could not be removed; try again before
 		// appending anything, so a half line is never followed by a good one.
 		if err := l.f.Truncate(l.size); err != nil {
-			return Event{}, fmt.Errorf("journal still has a partial line from an earlier failed write: %w", err)
+			return nil, fmt.Errorf("journal still has a partial line from an earlier failed write: %w", err)
 		}
 		l.torn = false
 	}
-	line := append(b, '\n')
-	_, err = l.f.Write(line)
+	_, err := l.f.Write(buf.Bytes())
 	if err == nil {
 		err = l.f.Sync()
 	}
 	if err != nil {
 		// The write may have been partial (disk full). Cut the file back to the last good line so
-		// the journal stays replayable; the event was not acknowledged, so nothing is lost.
+		// the journal stays replayable; nothing was acknowledged, so nothing is lost.
 		if terr := l.f.Truncate(l.size); terr != nil {
 			l.torn = true
 		}
-		return Event{}, err
+		return nil, err
 	}
-	l.size += int64(len(line))
-	l.next++
-	return e, nil
+	l.size += int64(buf.Len())
+	l.next += int64(len(events))
+	return out, nil
 }
 
 // truncateTornTail drops a final line without a trailing newline — a write cut short by a crash —
