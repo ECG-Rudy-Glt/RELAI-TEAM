@@ -109,6 +109,9 @@ cat > config/config.json <<'EOF2'
 EOF2
 RELAI_TEAM_REPOS=$HOME/work docker compose up -d     # $HOME/work/auth-service → /repos/auth-service
 curl -H 'Authorization: Bearer change-me-1' localhost:8080/items
+
+# or run the published image (from the first release on; it needs the same config and secrets as the compose file)
+docker pull ghcr.io/ecg-rudy-glt/relai-team:latest
 ```
 
 - The image bundles `git`, `bd` (Beads) and `openspec`, which the server reads repos through.
