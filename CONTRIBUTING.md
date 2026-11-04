@@ -47,6 +47,27 @@ go test -race ./...
 - **Keep the README true.** If a command, flag or limit changes, change the README in the same PR.
 - **One concern per PR**, with a description that says what changed, why, and how you verified it.
 
+### Merge rules
+
+These apply to every pull request, whoever (or whatever) wrote it. The PR template carries the checklist.
+
+1. **Green CI is required.** `gofmt`, `go vet`, `go test` and the Docker build must pass; a red check is fixed, not skipped.
+2. **Nothing merges without a review from the code owner** (`.github/CODEOWNERS`). The author of a PR never merges it
+   themselves, and an AI agent never merges, tags or releases unless the maintainer asked it to in that session.
+3. **One concern per PR**, small enough to review in one sitting. A fix found on the way goes in its own PR.
+4. **Branch from `main`, named for the change** (`feat/…`, `fix/…`, `docs/…`). No force-push on a branch someone reviewed;
+   add commits, the history is squashed or merged at the end.
+5. **Security-sensitive areas need extra care**: the journal (`internal/store`), authentication and rate limits
+   (`internal/server`), the issue mirror (`internal/mirror`). A change there says in the PR what it can break and how it was
+   tested against an attacker, not only against a friend.
+6. **The PR description is the record.** It states what changed, why, how it was verified, and what was not verified.
+   If a number is quoted (tokens, seconds, savings), it says how many runs it comes from.
+7. **After the merge**, the author closes the tasks with `Closes <task id>` in the merge commit message and removes the branch.
+
+Recommended repository settings (the maintainer sets them; they are not enforced by this file): protect `main`, require the `test`
+and `docker` checks, require one approving review and a review from code owners, dismiss stale approvals on new commits, forbid
+force-pushes and deletion of `main`, and require branches to be up to date before merging.
+
 ### Larger changes go through OpenSpec
 
 A new feature or a change in behaviour starts as a change under `openspec/changes/<name>/`: a
