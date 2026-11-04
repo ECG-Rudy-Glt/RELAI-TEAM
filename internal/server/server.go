@@ -19,6 +19,7 @@ import (
 
 	"github.com/ECG-Rudy-Glt/RELAI-TEAM/internal/aggregate"
 	"github.com/ECG-Rudy-Glt/RELAI-TEAM/internal/board"
+	"github.com/ECG-Rudy-Glt/RELAI-TEAM/internal/mirror"
 )
 
 // RepoStatus is what the server knows about one declared repo.
@@ -38,6 +39,7 @@ type Server struct {
 	board    *board.Board
 	agg      *aggregate.Aggregator
 	declared []string
+	mirrors  []*mirror.Mirror // read-only issue mirrors, each shown as a repo named by its source
 	tokens   map[[32]byte]string
 	admins   map[string]bool // identities allowed to force a release
 
@@ -72,12 +74,17 @@ func New(cfg Config, b *board.Board, agg *aggregate.Aggregator) (*Server, error)
 			admins[m.Identity] = true
 		}
 	}
+	mirrors, err := cfg.Mirrors()
+	if err != nil {
+		return nil, err
+	}
 	b.SetLease(cfg.ClaimLeaseDuration())
 	return &Server{
 		admins:   admins,
 		board:    b,
 		agg:      agg,
 		declared: append([]string(nil), cfg.Repos...),
+		mirrors:  mirrors,
 		tokens:   tokens,
 		status:   map[string]RepoStatus{},
 		hub:      newHub(),
@@ -98,6 +105,13 @@ func (s *Server) Refresh() error {
 
 func (s *Server) refresh() error {
 	read, skipped := s.agg.All(s.declared)
+	for _, m := range s.mirrors {
+		if r, err := m.Read(); err != nil {
+			skipped = append(skipped, aggregate.Skip{Source: m.Src.Name(), Reason: err.Error()})
+		} else {
+			read = append(read, r)
+		}
+	}
 	// Two repos with the same relai.yaml id would share item ids, and a claim on one would show
 	// on the other. The first declared keeps the id; the others are reported as unreadable, with
 	// the reason, until one of them changes its id.
@@ -143,11 +157,20 @@ func (s *Server) refresh() error {
 	return nil
 }
 
+// sources is every source the server shows: the declared repos, then the issue mirrors.
+func (s *Server) sources() []string {
+	out := append([]string(nil), s.declared...)
+	for _, m := range s.mirrors {
+		out = append(out, m.Src.Name())
+	}
+	return out
+}
+
 // visibleRepos maps the IDs of repos that are both declared in the config and known to the board
 // (read now or in an earlier run) to their source.
 func (s *Server) visibleRepos() map[string]string {
 	declared := map[string]bool{}
-	for _, src := range s.declared {
+	for _, src := range s.sources() {
 		declared[src] = true
 	}
 	out := map[string]string{}
@@ -225,8 +248,9 @@ func (s *Server) repos(w http.ResponseWriter, _ *http.Request) {
 		counts[it.Repo]++
 	}
 	s.mu.RLock()
-	out := make([]RepoStatus, 0, len(s.declared))
-	for _, src := range s.declared {
+	srcs := s.sources()
+	out := make([]RepoStatus, 0, len(srcs))
+	for _, src := range srcs {
 		st, ok := s.status[src]
 		if !ok {
 			st = RepoStatus{Source: src, Error: "not read yet"}

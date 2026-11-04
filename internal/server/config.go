@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/ECG-Rudy-Glt/RELAI-TEAM/internal/aggregate"
+	"github.com/ECG-Rudy-Glt/RELAI-TEAM/internal/mirror"
 	"net"
 	"net/url"
 	"os"
@@ -37,6 +38,8 @@ type Config struct {
 	FullRefreshInterval string `json:"full_refresh_interval"`
 	// RefreshConcurrency caps how many repos are read at once; default 8.
 	RefreshConcurrency int `json:"refresh_concurrency"`
+	// IssueMirrors reflects the open issues of GitHub or GitLab projects onto the board, read-only.
+	IssueMirrors []IssueMirrorConfig `json:"issue_mirrors"`
 	// TLSCert and TLSKey, both or neither, make the server speak HTTPS.
 	TLSCert string `json:"tls_cert"`
 	TLSKey  string `json:"tls_key"`
@@ -48,6 +51,80 @@ type GitCredentialConfig struct {
 	Host     string `json:"host"`               // "github.com" (or "host:port")
 	Username string `json:"username,omitempty"` // default "x-access-token"; GitLab wants "oauth2"
 	TokenEnv string `json:"token_env"`
+}
+
+// IssueMirrorConfig is one GitHub or GitLab project whose open issues appear as work items. The token
+// itself never goes in the config file: TokenEnv names the environment variable that holds it, and a
+// read-only token (issues: read) is enough, the server never writes to the forge.
+type IssueMirrorConfig struct {
+	Provider string `json:"provider"`           // "github" or "gitlab"
+	Project  string `json:"project"`            // "owner/name", or "group/sub/name" on GitLab
+	TokenEnv string `json:"token_env"`          // environment variable holding the token
+	BaseURL  string `json:"base_url,omitempty"` // https API root; default api.github.com / gitlab.com (self-hosted GitLab: https://gitlab.example.com)
+	RepoID   string `json:"repo_id,omitempty"`  // id the items appear under; default: the project's last path segment
+	Interval string `json:"interval,omitempty"` // shortest time between requests to the forge; default 5m, at least 1m
+}
+
+var repoIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+
+// Mirrors validates the issue mirrors and builds them, reading each token from its environment
+// variable. An empty variable is an error at startup, not an unreadable project later.
+func (c Config) Mirrors() ([]*mirror.Mirror, error) {
+	var out []*mirror.Mirror
+	seen, ids := map[string]bool{}, map[string]bool{}
+	for i, mc := range c.IssueMirrors {
+		where := fmt.Sprintf("issue_mirrors[%d]", i)
+		if mc.Provider != "github" && mc.Provider != "gitlab" {
+			return nil, fmt.Errorf("%s: provider must be \"github\" or \"gitlab\"", where)
+		}
+		mc.Project = strings.Trim(strings.TrimSpace(mc.Project), "/")
+		if mc.Project == "" || !strings.Contains(mc.Project, "/") || strings.ContainsAny(mc.Project, " ?#\\") || strings.Contains(mc.Project, "..") {
+			return nil, fmt.Errorf("%s: project must look like owner/name", where)
+		}
+		if mc.TokenEnv == "" {
+			return nil, fmt.Errorf("%s: token_env is required (the name of the environment variable holding a read-only token)", where)
+		}
+		tok := strings.TrimSpace(os.Getenv(mc.TokenEnv))
+		if tok == "" {
+			return nil, fmt.Errorf("%s (%s): environment variable %s is empty or not set", where, mc.Project, mc.TokenEnv)
+		}
+		base := mc.BaseURL
+		if base == "" {
+			base = map[string]string{"github": "https://api.github.com", "gitlab": "https://gitlab.com"}[mc.Provider]
+		}
+		u, err := url.Parse(base)
+		if err != nil || u.Host == "" || u.User != nil {
+			return nil, fmt.Errorf("%s: base_url is not a usable URL (credentials in it are refused)", where)
+		}
+		if u.Scheme != "https" && !(u.Scheme == "http" && !ListensBeyondLoopback(net.JoinHostPort(u.Hostname(), "0"))) {
+			return nil, fmt.Errorf("%s: base_url must be https: the token would travel in clear", where)
+		}
+		id := mc.RepoID
+		if id == "" {
+			id = mc.Project[strings.LastIndex(mc.Project, "/")+1:]
+		}
+		if !repoIDPattern.MatchString(id) {
+			return nil, fmt.Errorf("%s: repo_id %q must be letters, digits, '.', '_' or '-'", where, id)
+		}
+		key := mc.Provider + ":" + mc.Project
+		if seen[key] {
+			return nil, fmt.Errorf("%s: %s is declared twice", where, key)
+		}
+		if ids[id] {
+			return nil, fmt.Errorf("%s: repo_id %q is used by another mirror: set repo_id to tell them apart", where, id)
+		}
+		seen[key], ids[id] = true, true
+		var interval time.Duration
+		if mc.Interval != "" {
+			d, err := time.ParseDuration(mc.Interval)
+			if err != nil || d < time.Minute {
+				return nil, fmt.Errorf("%s: interval must be a duration of at least 1m, such as 5m", where)
+			}
+			interval = d
+		}
+		out = append(out, mirror.New(mirror.Source{Provider: mc.Provider, Project: mc.Project, BaseURL: base, RepoID: id, Token: tok, Interval: interval}))
+	}
+	return out, nil
 }
 
 // Member is one identity of the declared team. Give either the token itself or its SHA-256 (hex),
@@ -74,7 +151,7 @@ func LoadConfig(path string) (Config, error) {
 	if err := dec.Decode(&c); err != nil {
 		return Config{}, fmt.Errorf("%s: %w", path, err)
 	}
-	if err := checkRepos(path, c.Repos); err != nil {
+	if err := checkRepos(path, c.Repos, len(c.IssueMirrors) > 0); err != nil {
 		return Config{}, err
 	}
 	if c.Listen == "" {
@@ -99,6 +176,9 @@ func LoadConfig(path string) (Config, error) {
 		}
 	}
 	if _, err := c.GitAuth(); err != nil {
+		return Config{}, fmt.Errorf("%s: %w", path, err)
+	}
+	if _, err := c.Mirrors(); err != nil {
 		return Config{}, fmt.Errorf("%s: %w", path, err)
 	}
 	if c.ClaimLease == "" {
@@ -137,9 +217,9 @@ func LoadConfig(path string) (Config, error) {
 
 // checkRepos refuses an empty list (a server with nothing to show), blank entries, and the same
 // repository declared twice, directly or through a symbolic link.
-func checkRepos(path string, repos []string) error {
-	if len(repos) == 0 {
-		return fmt.Errorf("%s: repos: declare at least one repository (a local path or a clone URL)", path)
+func checkRepos(path string, repos []string, hasMirrors bool) error {
+	if len(repos) == 0 && !hasMirrors {
+		return fmt.Errorf("%s: repos: declare at least one repository (a local path or a clone URL) or an issue_mirrors entry", path)
 	}
 	seen := map[string]int{}
 	for i, r := range repos {

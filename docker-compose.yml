@@ -8,7 +8,8 @@ services:
     user: "${RELAI_TEAM_UID:-1000}:${RELAI_TEAM_GID:-1000}"
     environment:
       HOME: /tmp
-    # Secrets for private repos (e.g. GITHUB_TOKEN=...), named by token_env in config.json.
+    # Secrets for private repos and issue mirrors (e.g. GITHUB_TOKEN=..., GITLAB_ISSUES_TOKEN=...), named by
+    # token_env in config.json.
     # Optional: the file does not have to exist. Keep it out of git.
     env_file:
       - path: ./config/secrets.env
