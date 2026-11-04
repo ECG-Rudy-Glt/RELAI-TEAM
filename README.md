@@ -34,7 +34,7 @@ Relai itself stays git-only with no server, and never depends on this project.
   crashed agent never blocks a task, and an administrator can free one by hand.
 - **Agent tools (MCP).** `relai-mcp` gives Claude Code, Codex and other MCP clients five tools to
   list, claim and release work, as their own identity.
-- **Claims survive restarts.** An append-only event log (`events.jsonl`), no database to run.
+- **Claims survive restarts.** An append-only event log (`events.jsonl`), no database to run. A write that fails half way (disk full) is cut off, and a line that is not a valid event is moved to `events.jsonl.rejected` with a warning instead of stopping the server.
 - **Per-person tokens, optional HTTPS.** Every request is authenticated as a declared team member;
   set a certificate and key and the server speaks HTTPS itself.
 - **Honest about gaps.** A repo the server cannot read is reported as unreadable, never silently

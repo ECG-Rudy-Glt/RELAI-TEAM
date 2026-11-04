@@ -87,15 +87,16 @@ func run(cfgPath string) error {
 		return err
 	}
 	logPath := filepath.Join(cfg.DataDir, "events.jsonl")
-	past, err := store.Replay(logPath)
-	if err != nil {
-		return err
-	}
+	// Open first: it repairs a damaged journal, so the replay below sees a clean one.
 	events, err := store.Open(logPath)
 	if err != nil {
 		return err
 	}
 	defer events.Close()
+	past, err := store.Replay(logPath)
+	if err != nil {
+		return err
+	}
 
 	for _, w := range server.MissingTools(nil) {
 		log.Printf("WARNING: %s", w)

@@ -4,9 +4,11 @@ package store
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"sync"
 	"time"
@@ -43,11 +45,16 @@ type Log struct {
 	mu   sync.Mutex
 	f    *os.File
 	next int64
+	size int64 // length of the journal up to the end of the last fully written line
+	torn bool  // a failed write may have left bytes after size that could not be cut off yet
 }
 
 // Open opens (or creates) the log at path, positioned to append after its last event.
 func Open(path string) (*Log, error) {
 	if err := truncateTornTail(path); err != nil {
+		return nil, err
+	}
+	if err := quarantineInvalidLines(path); err != nil {
 		return nil, err
 	}
 	events, err := Replay(path)
@@ -58,11 +65,16 @@ func Open(path string) (*Log, error) {
 	if err != nil {
 		return nil, err
 	}
+	st, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
 	next := int64(1)
 	if n := len(events); n > 0 {
 		next = events[n-1].Seq + 1
 	}
-	return &Log{f: f, next: next}, nil
+	return &Log{f: f, next: next, size: st.Size()}, nil
 }
 
 // Append writes e as the next event, assigning its sequence number and time, and returns it as
@@ -78,12 +90,28 @@ func (l *Log) Append(e Event) (Event, error) {
 	if err != nil {
 		return Event{}, err
 	}
-	if _, err := l.f.Write(append(b, '\n')); err != nil {
+	if l.torn {
+		// A previous write failed and its leftovers could not be removed; try again before
+		// appending anything, so a half line is never followed by a good one.
+		if err := l.f.Truncate(l.size); err != nil {
+			return Event{}, fmt.Errorf("journal still has a partial line from an earlier failed write: %w", err)
+		}
+		l.torn = false
+	}
+	line := append(b, '\n')
+	_, err = l.f.Write(line)
+	if err == nil {
+		err = l.f.Sync()
+	}
+	if err != nil {
+		// The write may have been partial (disk full). Cut the file back to the last good line so
+		// the journal stays replayable; the event was not acknowledged, so nothing is lost.
+		if terr := l.f.Truncate(l.size); terr != nil {
+			l.torn = true
+		}
 		return Event{}, err
 	}
-	if err := l.f.Sync(); err != nil {
-		return Event{}, err
-	}
+	l.size += int64(len(line))
 	l.next++
 	return e, nil
 }
@@ -109,6 +137,58 @@ func truncateTornTail(path string) error {
 		}
 	}
 	return os.Truncate(path, int64(keep))
+}
+
+// quarantineInvalidLines moves every line that is not a valid event out of the journal, into
+// path+".rejected", so a line damaged by an earlier failure cannot keep the server from starting.
+// Each moved line is reported in the log. The journal is rewritten only if something was moved,
+// through a temporary file and a rename.
+func quarantineInvalidLines(path string) error {
+	b, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var good, bad bytes.Buffer
+	for n, line := range bytes.Split(b, []byte("\n")) {
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var e Event
+		if err := json.Unmarshal(line, &e); err != nil {
+			log.Printf("WARNING: %s:%d is not a valid event (%v); moved to %s.rejected", path, n+1, err, path)
+			bad.Write(line)
+			bad.WriteByte('\n')
+			continue
+		}
+		good.Write(line)
+		good.WriteByte('\n')
+	}
+	if bad.Len() == 0 {
+		return nil
+	}
+	rf, err := os.OpenFile(path+".rejected", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := rf.Write(bad.Bytes()); err != nil {
+		rf.Close()
+		return err
+	}
+	if err := rf.Sync(); err != nil {
+		rf.Close()
+		return err
+	}
+	if err := rf.Close(); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, good.Bytes(), 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 // Close closes the underlying file.
