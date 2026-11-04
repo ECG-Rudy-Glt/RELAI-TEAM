@@ -20,11 +20,16 @@ import (
 
 // startServer runs a real relai-server in process over one fixture repo with n open tasks.
 func startServer(t *testing.T, n int) *httptest.Server {
+	return startServerYAML(t, n, "id: billing-api\nsummary: Invoicing.\n")
+}
+
+// startServerYAML is startServer with the repo's relai.yaml chosen by the test.
+func startServerYAML(t *testing.T, n int, manifest string) *httptest.Server {
 	t.Helper()
 	root := t.TempDir()
 	repo := filepath.Join(root, "billing")
 	_ = os.MkdirAll(filepath.Join(repo, ".beads"), 0o755)
-	_ = os.WriteFile(filepath.Join(repo, "relai.yaml"), []byte("id: billing-api\nsummary: Invoicing.\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(repo, "relai.yaml"), []byte(manifest), 0o644)
 	if out, err := exec.Command("git", "-C", repo, "init", "-q", "-b", "main").CombinedOutput(); err != nil {
 		t.Fatalf("git init: %v\n%s", err, out)
 	}
@@ -279,5 +284,38 @@ func TestBoardChangesKeepsOneLinePerItem(t *testing.T) {
 	}
 	if !strings.Contains(txt, "next: board_changes since=") {
 		t.Errorf("the next cursor is missing: %s", txt)
+	}
+}
+
+func TestBoardFindTellsAnAgentWhatExistsBeforeItBuilds(t *testing.T) {
+	h := startServerYAML(t, 1, "id: billing-api\nsummary: Invoicing.\nprovides:\n  - capability: invoice.pdf\nconsumes: [auth.oidc]\nlinks: [web-shop]\n")
+	alice := &Client{BaseURL: h.URL, Token: "alice-token"}
+	txt, isErr := tool(t, alice, "board_find", `{"capability":"Invoice.PDF"}`)
+	if isErr || !strings.Contains(txt, "billing-api provides Invoice.PDF — Invoicing.") || !strings.Contains(txt, "works with: web-shop") {
+		t.Errorf("find = %v %q", isErr, txt)
+	}
+	txt, _ = tool(t, alice, "board_find", `{"capability":"auth.oidc"}`)
+	if !strings.Contains(txt, "billing-api consumes") {
+		t.Errorf("a consumer should be reported as such: %q", txt)
+	}
+	txt, isErr = tool(t, alice, "board_find", `{"capability":"nothing.here"}`)
+	if isErr || !strings.Contains(txt, "declares") || !strings.Contains(txt, "without having declared it") {
+		t.Errorf("not found must not say 'does not exist': %v %q", isErr, txt)
+	}
+	if _, isErr = tool(t, alice, "board_find", `{}`); !isErr {
+		t.Error("an empty capability must be refused")
+	}
+}
+
+func TestBoardLinksSaysWhatIsDeclaredAndWhatIsOnlyMentioned(t *testing.T) {
+	h := startServerYAML(t, 1, "id: billing-api\nsummary: Invoicing.\nprovides: [invoice.pdf]\nlinks: [web-shop]\n")
+	alice := &Client{BaseURL: h.URL, Token: "alice-token"}
+	txt, isErr := tool(t, alice, "board_links", `{"repo":"billing-api","candidates":true}`)
+	if isErr || !strings.Contains(txt, "provides: invoice.pdf") || !strings.Contains(txt, "works with: web-shop") ||
+		!strings.Contains(txt, "NOT verified links") {
+		t.Errorf("links = %v %q", isErr, txt)
+	}
+	if txt, isErr = tool(t, alice, "board_links", `{"repo":"nope"}`); !isErr || !strings.Contains(txt, "no repo") {
+		t.Errorf("unknown repo: %v %q", isErr, txt)
 	}
 }

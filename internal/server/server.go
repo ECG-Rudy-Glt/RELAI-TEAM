@@ -9,7 +9,9 @@ import (
 	"errors"
 	"fmt"
 	"github.com/ECG-Rudy-Glt/RELAI-TEAM/internal/store"
+	"log"
 	"net/http"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -19,6 +21,7 @@ import (
 
 	"github.com/ECG-Rudy-Glt/RELAI-TEAM/internal/aggregate"
 	"github.com/ECG-Rudy-Glt/RELAI-TEAM/internal/board"
+	"github.com/ECG-Rudy-Glt/RELAI-TEAM/internal/discover"
 	"github.com/ECG-Rudy-Glt/RELAI-TEAM/internal/mirror"
 )
 
@@ -32,6 +35,8 @@ type RepoStatus struct {
 	Notes    []string  `json:"notes,omitempty"`
 	LastRead time.Time `json:"last_read,omitempty"`
 	Items    int       `json:"items"`
+	// What the repo's relai.yaml says it provides, consumes and works with.
+	aggregate.Manifest
 }
 
 // Server serves one team's board.
@@ -40,6 +45,9 @@ type Server struct {
 	agg      *aggregate.Aggregator
 	declared []string
 	mirrors  []*mirror.Mirror // read-only issue mirrors, each shown as a repo named by its source
+	mc       mentionCache
+	scan     []DiscoverConfig // folders scanned for repositories at each refresh
+	found    []string         // repositories found there at the last refresh (guarded by mu)
 	tokens   map[[32]byte]string
 	admins   map[string]bool // identities allowed to force a release
 
@@ -85,6 +93,7 @@ func New(cfg Config, b *board.Board, agg *aggregate.Aggregator) (*Server, error)
 		agg:      agg,
 		declared: append([]string(nil), cfg.Repos...),
 		mirrors:  mirrors,
+		scan:     append([]DiscoverConfig(nil), cfg.Discover...),
 		tokens:   tokens,
 		status:   map[string]RepoStatus{},
 		hub:      newHub(),
@@ -104,7 +113,7 @@ func (s *Server) Refresh() error {
 }
 
 func (s *Server) refresh() error {
-	read, skipped := s.agg.All(s.declared)
+	read, skipped := s.agg.All(s.sourcesToRead())
 	for _, m := range s.mirrors {
 		if r, err := m.Read(); err != nil {
 			skipped = append(skipped, aggregate.Skip{Source: m.Src.Name(), Reason: err.Error()})
@@ -143,7 +152,7 @@ func (s *Server) refresh() error {
 	for _, r := range repos {
 		s.status[r.Source] = RepoStatus{
 			Source: r.Source, ID: r.ID, Summary: r.Summary, Readable: true,
-			Notes: r.Notes, LastRead: now,
+			Notes: r.Notes, LastRead: now, Manifest: r.Manifest,
 		}
 	}
 	for _, sk := range skipped {
@@ -157,9 +166,56 @@ func (s *Server) refresh() error {
 	return nil
 }
 
-// sources is every source the server shows: the declared repos, then the issue mirrors.
+// sourcesToRead is the declared repos plus the repositories found in the discover folders. The folders are
+// scanned again every time: a project cloned there appears on the next refresh, and one removed becomes
+// unreadable (its items and claims are kept, as for any repo that cannot be read).
+func (s *Server) sourcesToRead() []string {
+	out := append([]string(nil), s.declared...)
+	if len(s.scan) == 0 {
+		return out
+	}
+	have := map[string]bool{}
+	for _, d := range out {
+		if real, err := filepath.EvalSymlinks(d); err == nil {
+			have[real] = true
+		}
+		have[d] = true
+	}
+	var found []string
+	for _, d := range s.scan {
+		depth := d.Depth
+		if depth == 0 {
+			depth = 1
+		}
+		paths, err := discover.Find(d.Folder, depth)
+		if err != nil {
+			log.Printf("discover: %v", err)
+			continue
+		}
+		for _, p := range paths {
+			real, rerr := filepath.EvalSymlinks(p)
+			if rerr != nil {
+				real = p
+			}
+			if have[p] || have[real] {
+				continue
+			}
+			have[p], have[real] = true, true
+			found = append(found, p)
+		}
+	}
+	s.mu.Lock()
+	s.found = found
+	s.mu.Unlock()
+	return append(out, found...)
+}
+
+// sources is every source the server shows: the declared repos, those found by discovery, then the issue mirrors.
 func (s *Server) sources() []string {
 	out := append([]string(nil), s.declared...)
+	s.mu.RLock()
+	out = append(out, s.found...)
+	s.mu.RUnlock()
 	for _, m := range s.mirrors {
 		out = append(out, m.Src.Name())
 	}
@@ -194,6 +250,8 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("POST /items/{id}/release", s.release)
 	api.HandleFunc("GET /events", s.events)
 	api.HandleFunc("GET /changes", s.changes)
+	api.HandleFunc("GET /links", s.links)
+	api.HandleFunc("GET /find", s.find)
 
 	root := http.NewServeMux()
 	root.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
