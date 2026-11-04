@@ -34,14 +34,59 @@ type RepoStatus struct {
 	Items    int       `json:"items"`
 }
 
+// authState is what a reload can change: the members' token hashes and who may force a release.
+type authState struct {
+	tokens map[[32]byte]string
+	admins map[string]bool
+}
+
+// limits are the request limiters, rebuilt when the limits in the config change.
+type limits struct {
+	authFail   *limiter
+	perMember  *limiter
+	trustProxy bool
+}
+
+func newAuth(cfg Config) (*authState, error) {
+	tokens, err := cfg.tokens()
+	if err != nil {
+		return nil, err
+	}
+	admins := map[string]bool{}
+	for _, m := range cfg.Members {
+		if m.Admin {
+			admins[m.Identity] = true
+		}
+	}
+	return &authState{tokens: tokens, admins: admins}, nil
+}
+
+// Reload applies the parts of a new config that can change while the server runs: the members and their
+// tokens (so a token can be rotated or revoked without a restart and without losing a claim) and the
+// request limits. Everything else (repos, listen address, TLS...) needs a restart; the caller says so.
+func (s *Server) Reload(cfg Config) error {
+	a, err := newAuth(cfg)
+	if err != nil {
+		return err
+	}
+	s.auth.Store(a)
+	s.limits.Store(&limits{
+		authFail:   newLimiter(cfg.AuthFailureLimit(), s.clock),
+		perMember:  newLimiter(cfg.RequestLimit(), s.clock),
+		trustProxy: cfg.TrustProxy,
+	})
+	return nil
+}
+
 // Server serves one team's board.
 type Server struct {
 	board    *board.Board
 	agg      *aggregate.Aggregator
 	declared []string
-	mirrors  []*mirror.Mirror // read-only issue mirrors, each shown as a repo named by its source
-	tokens   map[[32]byte]string
-	admins   map[string]bool // identities allowed to force a release
+	mirrors  []*mirror.Mirror          // read-only issue mirrors, each shown as a repo named by its source
+	auth     atomic.Pointer[authState] // who may get in; replaced by Reload without a restart
+	limits   atomic.Pointer[limits]
+	clock    func() time.Time // for tests
 
 	mu     sync.RWMutex
 	status map[string]RepoStatus // by source
@@ -64,31 +109,23 @@ func (s *Server) CloseStreams() { s.hub.close() }
 
 // New wires a server. agg may use a fake command runner in tests.
 func New(cfg Config, b *board.Board, agg *aggregate.Aggregator) (*Server, error) {
-	tokens, err := cfg.tokens()
-	if err != nil {
-		return nil, err
-	}
-	admins := map[string]bool{}
-	for _, m := range cfg.Members {
-		if m.Admin {
-			admins[m.Identity] = true
-		}
-	}
 	mirrors, err := cfg.Mirrors()
 	if err != nil {
 		return nil, err
 	}
 	b.SetLease(cfg.ClaimLeaseDuration())
-	return &Server{
-		admins:   admins,
+	srv := &Server{
 		board:    b,
 		agg:      agg,
 		declared: append([]string(nil), cfg.Repos...),
 		mirrors:  mirrors,
-		tokens:   tokens,
 		status:   map[string]RepoStatus{},
 		hub:      newHub(),
-	}, nil
+	}
+	if err := srv.Reload(cfg); err != nil {
+		return nil, err
+	}
+	return srv, nil
 }
 
 // Refresh re-reads every declared repo and merges the result into the board, so a task's status
@@ -214,6 +251,14 @@ type ctxKey struct{}
 // reaches a handler — no board data is ever returned to an unknown caller.
 func (s *Server) authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		lim := s.limits.Load()
+		addr := clientAddr(r, lim.trustProxy)
+		// A client that has used up its wrong guesses is turned away BEFORE its token is looked at: otherwise
+		// the limit would not stop a guess from being tried.
+		if ok, retry := lim.authFail.peek(addr); !ok {
+			tooMany(w, retry, "too many wrong tokens from this address")
+			return
+		}
 		h := r.Header.Get("Authorization")
 		// The scheme name is case-insensitive (RFC 7235); the token itself is compared exactly.
 		token, ok := "", false
@@ -221,12 +266,18 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 			token, ok = h[7:], true
 		}
 		if !ok || token == "" {
+			lim.authFail.take(addr)
 			writeError(w, http.StatusUnauthorized, "missing bearer token")
 			return
 		}
-		who, ok := s.tokens[sha256.Sum256([]byte(token))]
+		who, ok := s.auth.Load().tokens[sha256.Sum256([]byte(token))]
 		if !ok {
+			lim.authFail.take(addr)
 			writeError(w, http.StatusUnauthorized, "token does not belong to a member of this team")
+			return
+		}
+		if ok, retry := lim.perMember.take(who); !ok {
+			tooMany(w, retry, "too many requests from "+who)
 			return
 		}
 		if s.loading.Load() {
@@ -399,7 +450,7 @@ func (s *Server) release(w http.ResponseWriter, r *http.Request) {
 	var it board.Item
 	var err error
 	if r.URL.Query().Get("force") == "true" {
-		if !s.admins[who] {
+		if !s.auth.Load().admins[who] {
 			writeError(w, http.StatusForbidden, "forcing a release needs an administrator")
 			return
 		}

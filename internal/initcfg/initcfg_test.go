@@ -114,3 +114,55 @@ func TestGenerate_RefusesARepoThatDoesNotExist(t *testing.T) {
 		t.Errorf("a clone URL must be accepted: %v", err)
 	}
 }
+
+func TestRotateAddsANewTokenKeepsTheOldThenDropsIt(t *testing.T) {
+	dir := t.TempDir()
+	repo := t.TempDir()
+	res, err := Generate(Options{Repos: []string{repo}, Members: []string{"alice", "bob"}, DataDir: "/d"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(p, res.JSON, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldTok := res.Members[0].Token
+
+	newTok, err := Rotate(p, "alice", false, nil)
+	if err != nil || newTok == oldTok || !strings.HasPrefix(newTok, "rt_") {
+		t.Fatalf("rotate: %q %v", newTok, err)
+	}
+	cfg, err := server.LoadConfig(p)
+	if err != nil {
+		t.Fatalf("the rotated config does not load: %v", err)
+	}
+	if st, _ := os.Stat(p); st.Mode().Perm() != 0o600 {
+		t.Errorf("config mode = %v, want 0600", st.Mode().Perm())
+	}
+	b, _ := os.ReadFile(p)
+	if strings.Contains(string(b), newTok) || strings.Contains(string(b), oldTok) {
+		t.Error("a token was written in clear")
+	}
+	if len(cfg.Members[0].TokenSHA256s) != 1 || cfg.Members[0].TokenSHA256 == "" {
+		t.Errorf("step 1 must keep the old hash and add the new one: %+v", cfg.Members[0])
+	}
+	if len(cfg.Members[1].TokenSHA256s) != 0 {
+		t.Error("another member was touched")
+	}
+
+	third, err := Rotate(p, "alice", true, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = server.LoadConfig(p)
+	if err != nil || len(cfg.Members[0].TokenSHA256s) != 0 || cfg.Members[0].TokenSHA256 == "" {
+		t.Fatalf("-drop-old must leave exactly one credential: %+v %v", cfg.Members[0], err)
+	}
+	sum := sha256.Sum256([]byte(third))
+	if cfg.Members[0].TokenSHA256 != hex.EncodeToString(sum[:]) {
+		t.Error("the remaining hash is not the newest token's")
+	}
+	if _, err := Rotate(p, "nobody", false, nil); err == nil {
+		t.Error("an unknown member was accepted")
+	}
+}

@@ -51,10 +51,18 @@ type Log struct {
 }
 
 // Open opens (or creates) the log at path, positioned to append after its last event.
-func Open(path string) (*Log, error) {
+func Open(path string) (*Log, error) { return open(path, false) }
+
+// OpenWait is Open for a standby server: instead of refusing when another server holds the journal, it
+// waits until that server stops or dies (the lock is released by the kernel even on a crash), then
+// takes over with the journal as the other left it. Both must see the same data_dir on a filesystem
+// that supports flock (the same host, or a volume mounted by both).
+func OpenWait(path string) (*Log, error) { return open(path, true) }
+
+func open(path string, wait bool) (*Log, error) {
 	// Take the lock before touching the file: a second server on the same journal would hand the
 	// same item to two people and reuse sequence numbers.
-	lock, err := lockJournal(path)
+	lock, err := lockJournal(path, wait)
 	if err != nil {
 		return nil, err
 	}

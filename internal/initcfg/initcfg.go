@@ -133,3 +133,59 @@ func Scan(dir string) ([]string, error) {
 }
 
 func exists(p string) bool { _, err := os.Stat(p); return err == nil }
+
+// Rotate gives a member a new token. The new token's hash is added to the member's "token_sha256s", so
+// the old token keeps working until the new one has been handed out; with dropOld the old credentials are
+// removed at once (use it for the second step, or when a token leaked). The config is read as generic JSON so
+// nothing else in it is touched, and written atomically with mode 0600. It returns the new token, which
+// is shown once and never stored.
+func Rotate(path, identity string, dropOld bool, r io.Reader) (string, error) {
+	if r == nil {
+		r = rand.Reader
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		return "", fmt.Errorf("%s: %w", path, err)
+	}
+	members, _ := cfg["members"].([]any)
+	var target map[string]any
+	for _, m := range members {
+		if mm, ok := m.(map[string]any); ok && mm["identity"] == identity {
+			target = mm
+		}
+	}
+	if target == nil {
+		return "", fmt.Errorf("no member %q in %s", identity, path)
+	}
+	raw := make([]byte, 24)
+	if _, err := io.ReadFull(r, raw); err != nil {
+		return "", err
+	}
+	tok := "rt_" + hex.EncodeToString(raw)
+	sum := sha256.Sum256([]byte(tok))
+	h := hex.EncodeToString(sum[:])
+	if dropOld {
+		delete(target, "token")
+		delete(target, "token_sha256s")
+		target["token_sha256"] = h
+	} else {
+		list, _ := target["token_sha256s"].([]any)
+		target["token_sha256s"] = append(list, h)
+	}
+	out, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, append(out, '\n'), 0o600); err != nil {
+		return "", err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return "", err
+	}
+	return tok, nil
+}
