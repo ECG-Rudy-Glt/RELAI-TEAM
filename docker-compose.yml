@@ -14,6 +14,9 @@ services:
     env_file:
       - path: ./config/secrets.env
         required: false
+    # Failover: a second process on the same ./data takes over when this one dies. Start it with
+    #   docker compose --profile standby up -d
+    # (it waits for the journal lock and serves nothing until then; both must share ./data on this host.)
     ports:
       - "${RELAI_TEAM_PORT:-8080}:8080"
     volumes:
@@ -23,4 +26,22 @@ services:
       - ./data:/data
       # Repos declared by local path in config.json must be visible at the same path in the container.
       # Writable on purpose: bd (Beads) needs to write lock files in .beads/ even for a read.
+      - ${RELAI_TEAM_REPOS:-./repos}:/repos
+
+  relai-team-standby:
+    profiles: ["standby"]
+    build: .
+    image: relai-team:dev
+    restart: unless-stopped
+    user: "${RELAI_TEAM_UID:-1000}:${RELAI_TEAM_GID:-1000}"
+    command: ["-standby"]
+    environment:
+      HOME: /tmp
+    env_file:
+      - path: ./config/secrets.env
+        required: false
+    # No published port: it takes over the work, not the port; publish it yourself or put a proxy in front.
+    volumes:
+      - ./config:/config:ro
+      - ./data:/data
       - ${RELAI_TEAM_REPOS:-./repos}:/repos

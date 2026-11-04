@@ -25,7 +25,7 @@ The project is v0.x. Only the latest release and `main` get fixes.
 
 | Area | What it does | What it does *not* do |
 |---|---|---|
-| Identity | Every route except `/healthz`, `/board` and `/` needs `Authorization: Bearer <token>`. Tokens are looked up by their SHA-256, so response timing does not reveal a prefix of a valid token. `relai-server init` stores only hashes. | No token expiry or rotation (change the config and restart), no rate limiting, no lockout after failed attempts. |
+| Identity | Every route except `/healthz`, `/board` and `/` needs `Authorization: Bearer <token>`. Tokens are looked up by their SHA-256, so response timing does not reveal a prefix of a valid token. `relai-server init` stores only hashes. | Rate limits: wrong or missing tokens are capped per client address (default 10 a minute, then `429` and the token is not even looked at, so it cannot be guessed by trying), and each member is capped at 600 requests a minute (`auth_failures_per_minute`, `requests_per_minute`, 0 turns each off). Rotation: `relai-server token` adds a new token while the old one still works, `-drop-old` removes it, `kill -HUP` applies it without a restart or losing a claim. | No automatic token expiry (you rotate on your schedule). The limits are in memory, per server, and a restart resets them; behind a reverse proxy set `trust_proxy` or every client shares the proxy's address. A leaked token is valid until you rotate it. |
 | Roles | Two: member and administrator. Only an administrator can force-release another member's claim, and only when it asks for it explicitly; the log records who did. | No finer permissions: every member can read every declared repo's tasks and claim any item. |
 | Transport | Optional built-in TLS (1.2+). Without it, tokens travel in clear: the server warns at startup when it listens beyond loopback. | It does not force HTTPS. Put TLS in front of anything that is not a private network. |
 | Web board | The page is public but static and holds no data. You paste a token; it lives in that tab's `sessionStorage` only. Text coming from repos is escaped before display, and a strict Content-Security-Policy applies (`default-src 'none'`, no framing). | A token pasted into a page is only as safe as the HTTPS and the browser it sits in. |
@@ -69,4 +69,4 @@ something it should not, a way to corrupt or forge the event log without write a
 
 Anything that needs write access to the config or data directory; a hostile repo that you chose to
 declare doing what repos do to `git`/`bd`/`openspec`; denial of service by a holder of a valid token;
-missing rate limiting (known, documented above); reports against unsupported versions.
+a flood from a holder of a valid token beyond the per-member limit; reports against unsupported versions.
