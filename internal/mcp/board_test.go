@@ -232,3 +232,31 @@ func TestLapseTimeIncludesTheDate(t *testing.T) {
 		t.Errorf("the lapse time should carry a date: %q", txt)
 	}
 }
+
+func TestBoardChangesGivesACursorAndOnlyWhatIsNew(t *testing.T) {
+	h := startServer(t, 3)
+	alice := &Client{BaseURL: h.URL, Token: "alice-token"}
+	bob := &Client{BaseURL: h.URL, Token: "bob-token"}
+
+	txt, isErr := tool(t, alice, "board_changes", `{}`)
+	m := regexp.MustCompile(`board seq (\d+)`).FindStringSubmatch(txt)
+	if isErr || m == nil || !strings.Contains(txt, "next: board_changes since="+m[1]) {
+		t.Fatalf("first call = %v %q", isErr, txt)
+	}
+	tool(t, bob, "board_claim", `{"id":"billing-api/bd/b-1"}`)
+	txt, isErr = tool(t, alice, "board_changes", `{"since":`+m[1]+`}`)
+	if isErr || !strings.Contains(txt, "1 changes") || !strings.Contains(txt, "billing-api/bd/b-1 claimed by bob") {
+		t.Fatalf("after bob's claim = %v %q", isErr, txt)
+	}
+	if strings.Contains(txt, "b-2") {
+		t.Errorf("only what changed should be listed: %q", txt)
+	}
+	m2 := regexp.MustCompile(`next: board_changes since=(\d+)`).FindStringSubmatch(txt)
+	txt, _ = tool(t, alice, "board_changes", `{"since":`+m2[1]+`}`)
+	if !strings.Contains(txt, "0 changes") {
+		t.Errorf("nothing new: %q", txt)
+	}
+	if txt, isErr = tool(t, alice, "board_changes", `{"since":-1}`); !isErr {
+		t.Errorf("a negative since must be refused: %q", txt)
+	}
+}

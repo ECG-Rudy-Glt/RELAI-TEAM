@@ -191,7 +191,8 @@ const instructions = "This is the team board: work items from several repos, eac
 	"person or agent. Before you start a task, claim it (board_claim or board_claim_next); if the " +
 	"claim is refused, someone else is on it, so pick other work. Release what you will not finish. " +
 	"A claim lapses after a while (the time is shown on your items): claim the item again to renew it " +
-	"while you are still working; if you stop, it frees itself."
+	"while you are still working; if you stop, it frees itself. To catch up on a board you already know, " +
+	"call board_changes with the seq it gave you last time instead of listing every item again."
 
 // Instructions is sent to the client at initialize time.
 func Instructions() string { return instructions }
@@ -302,6 +303,71 @@ func Tools(c *Client) []Tool {
 					b.WriteString(c.line(i) + "\n")
 				}
 				return strings.TrimRight(b.String(), "\n"), false
+			},
+		},
+		{
+			Name: "board_changes",
+			Description: "What happened on the board since a sequence number, in a few lines, instead of listing every item again. " +
+				"Call it with no arguments to get the current seq (and the latest few changes); later call it with since=<that seq> " +
+				"to see only what is new. If it says the history is too old, list the board with board_items once and start over.",
+			InputSchema: obj(map[string]any{"since": map[string]any{"type": "integer", "description": "the seq returned by the previous call"}}),
+			Handler: func(raw json.RawMessage) (string, bool) {
+				var a struct{ Since json.RawMessage }
+				_ = json.Unmarshal(raw, &a)
+				path := "/changes"
+				if len(a.Since) > 0 && string(a.Since) != "null" {
+					n, err := strconv.ParseInt(strings.TrimSpace(string(a.Since)), 10, 64)
+					if err != nil || n < 0 {
+						return "since must be a sequence number, 0 or more", true
+					}
+					path += "?since=" + strconv.FormatInt(n, 10)
+				}
+				var res struct {
+					Seq      int64 `json:"seq"`
+					Complete bool  `json:"complete"`
+					Changes  []struct {
+						Seq      int64  `json:"seq"`
+						Type     string `json:"type"`
+						ItemID   string `json:"item_id"`
+						Identity string `json:"identity"`
+						By       string `json:"by"`
+						Title    string `json:"title"`
+						Status   string `json:"status"`
+					} `json:"changes"`
+				}
+				if err := c.do("GET", path, &res); err != nil {
+					return fail(err)
+				}
+				if !res.Complete {
+					return fmt.Sprintf("board seq %d. Your history is too old to replay: list the board with board_items once, then use since=%d from here on.", res.Seq, res.Seq), false
+				}
+				me := c.who()
+				var b strings.Builder
+				fmt.Fprintf(&b, "board seq %d, %d changes\n", res.Seq, len(res.Changes))
+				for _, ch := range res.Changes {
+					who := ch.Identity
+					if who == me && who != "" {
+						who += " (you)"
+					}
+					switch ch.Type {
+					case "item_claimed":
+						fmt.Fprintf(&b, "#%d %s claimed by %s\n", ch.Seq, ch.ItemID, who)
+					case "item_released":
+						if ch.By != "" {
+							fmt.Fprintf(&b, "#%d %s released (was %s, freed by %s)\n", ch.Seq, ch.ItemID, who, ch.By)
+						} else {
+							fmt.Fprintf(&b, "#%d %s released by %s\n", ch.Seq, ch.ItemID, who)
+						}
+					case "item_created":
+						fmt.Fprintf(&b, "#%d %s new [%s] %s\n", ch.Seq, ch.ItemID, ch.Status, ch.Title)
+					case "item_updated":
+						fmt.Fprintf(&b, "#%d %s now [%s] %s\n", ch.Seq, ch.ItemID, ch.Status, ch.Title)
+					case "item_removed":
+						fmt.Fprintf(&b, "#%d %s gone (closed or removed)\n", ch.Seq, ch.ItemID)
+					}
+				}
+				fmt.Fprintf(&b, "next: board_changes since=%d", res.Seq)
+				return b.String(), false
 			},
 		},
 		{

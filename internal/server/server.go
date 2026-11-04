@@ -8,8 +8,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/ECG-Rudy-Glt/RELAI-TEAM/internal/store"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -168,6 +170,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("POST /items/{id}/claim", s.claim)
 	api.HandleFunc("POST /items/{id}/release", s.release)
 	api.HandleFunc("GET /events", s.events)
+	api.HandleFunc("GET /changes", s.changes)
 
 	root := http.NewServeMux()
 	root.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -258,6 +261,60 @@ func (s *Server) items(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, nonNil(out))
+}
+
+// change is one thing that happened on the board, as clients see it.
+type change struct {
+	Seq      int64     `json:"seq"`
+	Time     time.Time `json:"time"`
+	Type     string    `json:"type"` // item_created, item_updated, item_removed, item_claimed, item_released
+	ItemID   string    `json:"item_id"`
+	Repo     string    `json:"repo,omitempty"`
+	Identity string    `json:"identity,omitempty"`
+	By       string    `json:"by,omitempty"`
+	Title    string    `json:"title,omitempty"`
+	Status   string    `json:"status,omitempty"`
+}
+
+// changes answers "what happened since sequence number N?" so a client that already knows the
+// board does not have to list it again: GET /changes?since=N gives the board's current seq, the
+// changes after N (only for repos this server shows), and complete=false when N is older than the
+// history kept. Without since it gives just the current seq and the latest few changes.
+func (s *Server) changes(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	since, tail := int64(0), false
+	if v := q.Get("since"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 0 {
+			writeError(w, http.StatusBadRequest, "since must be a sequence number, 0 or more")
+			return
+		}
+		since = n
+	} else {
+		tail = true
+	}
+	events, seq, complete := s.board.Changes(since)
+	visible := s.visibleRepos()
+	out := []change{}
+	for _, e := range events {
+		if e.Type == store.RepoDeclared || e.ItemID == "" {
+			continue
+		}
+		if _, ok := visible[e.Repo]; !ok {
+			continue
+		}
+		out = append(out, change{Seq: e.Seq, Time: e.Time, Type: e.Type, ItemID: e.ItemID, Repo: e.Repo,
+			Identity: e.Identity, By: e.By, Title: e.Title, Status: e.Status})
+	}
+	limit := 200
+	if tail {
+		limit = 10
+	}
+	truncated := false
+	if len(out) > limit {
+		out, truncated = out[len(out)-limit:], true
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"seq": seq, "complete": complete && !(truncated && !tail), "changes": out})
 }
 
 func (s *Server) item(w http.ResponseWriter, r *http.Request) {

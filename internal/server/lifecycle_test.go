@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -108,5 +109,53 @@ func TestTwoReposWithTheSameIDDoNotShareItems(t *testing.T) {
 	_, _, items := f.do("GET", "/items", "alice-token")
 	if len(items) != 2 { // the two fixture tasks, once
 		t.Errorf("items = %d, want 2 (no duplicates)", len(items))
+	}
+}
+
+func TestChangesSinceASequenceNumber(t *testing.T) {
+	f := newFixture(t)
+	_, cur, _ := f.do("GET", "/changes", "alice-token")
+	seq0 := int64(cur["seq"].(float64))
+	if seq0 == 0 {
+		t.Fatalf("seq should count the events of the first read: %v", cur)
+	}
+	if code, obj, _ := f.do("GET", "/changes?since="+strconv.FormatInt(seq0, 10), "alice-token"); code != 200 || len(obj["changes"].([]any)) != 0 || obj["complete"] != true {
+		t.Fatalf("nothing happened yet: %d %v", code, obj)
+	}
+
+	f.do("POST", "/items/billing-api%2Fbd%2Fb-1/claim", "alice-token")
+	f.do("POST", "/items/billing-api%2Fbd%2Fb-1/release", "alice-token")
+	_, obj, _ := f.do("GET", "/changes?since="+strconv.FormatInt(seq0, 10), "bob-token")
+	ch := obj["changes"].([]any)
+	if len(ch) != 2 {
+		t.Fatalf("want a claim and a release, got %v", ch)
+	}
+	first := ch[0].(map[string]any)
+	if first["type"] != "item_claimed" || first["identity"] != "alice" || first["item_id"] != "billing-api/bd/b-1" {
+		t.Errorf("first change = %v", first)
+	}
+	if int64(obj["seq"].(float64)) != seq0+2 || int64(ch[1].(map[string]any)["seq"].(float64)) != seq0+2 {
+		t.Errorf("seq numbers do not line up: %v", obj)
+	}
+
+	if code, _, _ := f.do("GET", "/changes?since=abc", "alice-token"); code != 400 {
+		t.Errorf("a bad since = %d, want 400", code)
+	}
+	if code, _, _ := f.do("GET", "/changes", ""); code != 401 {
+		t.Errorf("changes without a token = %d, want 401", code)
+	}
+}
+
+func TestChangesSaysWhenTheHistoryIsTooOld(t *testing.T) {
+	f := newFixture(t)
+	f.srv.board.SetHistoryLimit(20)
+	// Enough claim/release pairs to push the first read out of the 20 kept events.
+	for i := 0; i < 20; i++ {
+		f.do("POST", "/items/billing-api%2Fbd%2Fb-1/claim", "alice-token")
+		f.do("POST", "/items/billing-api%2Fbd%2Fb-1/release", "alice-token")
+	}
+	_, obj, _ := f.do("GET", "/changes?since=0", "alice-token")
+	if obj["complete"] != false {
+		t.Errorf("a client at seq 0 must be told to list the board again: complete=%v", obj["complete"])
 	}
 }

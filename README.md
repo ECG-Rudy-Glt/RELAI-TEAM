@@ -161,6 +161,7 @@ environment variables are `RELAI_TEAM_URL` and `RELAI_TEAM_TOKEN`. As a project 
 | `board_claim` | Claim one item. If someone holds it, the answer names them: pick other work. Claiming your own item again renews it; your items show when their claim lapses. |
 | `board_release` | Release an item you hold. Administrators can pass `force` to free someone else's (a crashed agent's, say). |
 | `board_claim_next` | Claim the first unclaimed, non-blocked item (optionally in one repo). Safe when many agents ask at once. |
+| `board_changes` | What happened since a sequence number, in a few lines instead of listing every item again. Call it once for the number, then with `since=<number>`. |
 
 Refusals come back as ordinary tool results, not crashes, so an agent just moves on.
 The token lives in the client's MCP config: treat that file like any other secret.
@@ -201,6 +202,7 @@ All routes except `/healthz` need `Authorization: Bearer <token>`.
 | `POST /items/{id}/claim` | `200` with you as holder and `expires_at`; `409` + current holder if taken. Claiming an item you already hold **renews** it. |
 | `POST /items/{id}/release` | `200`; `409` if someone else holds it. Add `?force=true` as an administrator to free an item someone else holds (`403` for anyone else; the log records who did it). |
 | `GET /events` | Server-Sent Events stream: one `change` event whenever the board changes (no board data in it: re-fetch `/items`). |
+| `GET /changes?since=N` | What happened after sequence number N (claims, releases, new or changed items), the current `seq`, and `complete: false` when N is older than the 2,000 events kept (then list `/items` again). Without `since`: the current `seq` and the latest 10. |
 | `GET /board` | The web board (public, no data in the page). |
 
 Item IDs contain slashes (`auth-service/bd/auth-service-0p2`): **URL-encode them** in the path

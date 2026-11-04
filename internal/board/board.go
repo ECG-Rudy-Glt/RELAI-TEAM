@@ -62,6 +62,28 @@ type Board struct {
 
 	lease time.Duration // 0: claims never lapse
 	now   func() time.Time
+
+	history   []store.Event // the most recent events, oldest first, for Changes
+	seq       int64         // sequence number of the latest event
+	histLimit int
+}
+
+// historyCap is how many recent events Changes can replay. A client that has been away longer is
+// told to list the board again instead.
+const defaultHistory = 2000
+
+// SetHistoryLimit changes how many recent events Changes can replay (default 2,000); for tests.
+func (b *Board) SetHistoryLimit(n int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.histLimit = n
+}
+
+func (b *Board) historyCap() int {
+	if b.histLimit > 0 {
+		return b.histLimit
+	}
+	return defaultHistory
 }
 
 // SetLease makes claims lapse after d unless renewed (0 turns lapsing off). It applies to claims
@@ -116,6 +138,13 @@ func New(log Appender, past []store.Event) *Board {
 }
 
 func (b *Board) apply(e store.Event) {
+	if e.Seq > b.seq {
+		b.seq = e.Seq
+	}
+	b.history = append(b.history, e)
+	if c := b.historyCap(); len(b.history) > 2*c { // trim in bulk so appends stay cheap
+		b.history = append([]store.Event(nil), b.history[len(b.history)-c:]...)
+	}
 	switch e.Type {
 	case store.RepoDeclared:
 		b.repos[e.Repo] = e.Source
@@ -174,6 +203,25 @@ func (b *Board) record(e store.Event) error {
 	}
 	b.apply(stored)
 	return nil
+}
+
+// Changes returns the events after sequence number since, oldest first, and the board's current
+// sequence number. complete is false when since is older than the history kept: the caller then
+// cannot trust the answer to be everything that happened and should list the board again.
+func (b *Board) Changes(since int64) (events []store.Event, seq int64, complete bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	h := b.history
+	if c := b.historyCap(); len(h) > c {
+		h = h[len(h)-c:]
+	}
+	complete = len(h) == 0 || since >= h[0].Seq-1
+	for _, e := range h {
+		if e.Seq > since {
+			events = append(events, e)
+		}
+	}
+	return events, b.seq, complete
 }
 
 // Items returns every item, sorted by ID.
