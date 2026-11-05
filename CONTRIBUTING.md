@@ -101,7 +101,7 @@ publish, merge or tag without being asked.
 
 Every merge to `main` runs `.github/workflows/release.yml`: gofmt, vet and tests, then the next version from the conventional commits since the
 last tag (`feat:` raises the minor, `fix:`, `perf:` and `revert:` the patch, a `!` after the type or a `BREAKING CHANGE:` line the minor before 1.0.0
-and the major after), the tag, and the GitHub release with its binaries and `checksums.txt` (goreleaser). `docs:`, `chore:`, `test:`, `ci:` and
+and the major after), the tag, and the GitHub release with its binaries and `checksums.txt` (goreleaser) and the container image on `ghcr.io/ecg-rudy-glt/relai-team` (tagged with the version and `latest`; a new package is private until you make it public once in its settings on GitHub). `docs:`, `chore:`, `test:`, `ci:` and
 `refactor:` alone release nothing. So the type in the commit message **is** the release decision: write it on purpose. A tag pushed by hand
 (`v*`) is released as it is. Nobody tags or releases by hand otherwise.
 
