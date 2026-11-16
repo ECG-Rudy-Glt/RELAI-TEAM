@@ -1,0 +1,8 @@
+apiVersion: relai.dev/v0
+id: future
+summary: Uses keys this version does not know.
+lifecycle: production
+tags: [a, b]
+runtime:
+  language: go
+provides: []

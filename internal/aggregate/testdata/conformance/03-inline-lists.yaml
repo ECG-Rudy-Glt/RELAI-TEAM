@@ -1,0 +1,7 @@
+apiVersion: relai.dev/v0
+id: gateway
+summary: 'The API gateway.'
+owners: []
+provides: [{capability: http.gateway, version: 2}, "http.ratelimit"]
+consumes: [auth.oidc, logs.ship]
+links: [invoice-pdf]

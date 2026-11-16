@@ -1,0 +1,10 @@
+apiVersion: relai.dev/v0
+id: auth
+summary: Sign-in for every tool.
+provides:
+  - id: oidc
+    capability: auth.oidc
+    how_to_use: docs/usage.md
+  - capability: auth.tokens
+    interface: { type: http, spec: openapi.yaml }
+consumes: ~

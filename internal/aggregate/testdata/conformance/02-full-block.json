@@ -1,0 +1,5 @@
+{"apiVersion": "relai.dev/v0", "id": "team/invoice-pdf",
+ "summary": "Generates invoice PDFs: from JSON # not a comment",
+ "owners": ["alice", "team-billing"], "conventions": "team/conventions@2.3", "tasks": "github",
+ "provides": ["pdf.generate.invoice", "pdf.preview"], "consumes": ["auth.oidc"],
+ "links": ["billing-api", "fonts"]}

@@ -1,0 +1,16 @@
+apiVersion: relai.dev/v0
+id: team/invoice-pdf            # unique in the index
+summary: "Generates invoice PDFs: from JSON # not a comment"
+owners: [alice, 'team-billing']
+conventions: team/conventions@2.3
+tasks: github
+provides:
+  - capability: pdf.generate.invoice
+  # a comment between entries
+
+  - pdf.preview
+consumes:
+  - capability: auth.oidc        # resolved by the index
+links:
+  - billing-api
+  - "fonts"
