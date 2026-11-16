@@ -26,6 +26,7 @@
 - 2026-11-04 — Open decisions: a per-identity cap on claims (`RELAI-TEAM-b2o`); `deployment-presets` still deferred.
 
 - 2026-11-04 — `issue_mirrors`: GitHub/GitLab open issues shown as items, read-only (the server never writes to the forge; claims stay in the journal). Bounded polling (min interval 5 m, ETag, first page sorted by update, full re-read every 6 h, 300 issues, back-off on rate limit), token from an environment variable, one host, no cross-host redirect. Tested with fake forges only.
+- 2026-11-16 — relai.yaml is now specified in RELAI's spec/relai-yaml.md (versioned, unknown keys ignored); RELAI-TEAM's reader must follow that page. Backstage integration is planned later as a one-way export in RELAI (task relai-klb), not here.
 
 ### Pitfalls
 <!-- Things that cost time once and will again: symptom → cause → what to do. -->

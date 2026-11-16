@@ -277,6 +277,7 @@ each refresh: **a project you clone into it appears by itself**. A repository th
 and claims. `repos` and `discover` can be used together; at least one of `repos`, `discover` or `issue_mirrors` is required.
 
 The board also reads each repo's `relai.yaml`: `provides:` and `consumes:` (capability names) and `links:` (ids of the repos it works with).
+The file format is specified on one page, [`spec/relai-yaml.md`](https://github.com/ECG-Rudy-Glt/RELAI/blob/main/spec/relai-yaml.md) in the Relai repository (versioned; readers ignore keys they do not know, such as `tasks`). `relai validate` checks a file against it. For other tools, `relai handoff --json` and `relai workspace --json` print a repo's state as data.
 
 - `GET /links` returns the repos with those fields and the **edges** that follow: *declared* (a person wrote `links:`) and *capability*
   (a repo consumes what another provides). With `?candidates=1` it also returns the **mentions** found in the files of the repos on
