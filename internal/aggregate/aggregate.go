@@ -214,7 +214,12 @@ func (a *Aggregator) read(src string) (Repo, error) {
 
 	r := Repo{Source: src, ID: filepath.Base(strings.TrimSuffix(strings.TrimRight(src, "/"), ".git"))}
 	if b, err := os.ReadFile(filepath.Join(dir, "relai.yaml")); err == nil {
-		if id, summary := parseManifest(b); id != "" {
+		id, summary, err := parseManifest(b)
+		if err != nil {
+			// Spec rule 5: a version we do not know is said and not read. The caller reports it as a Skip.
+			return Repo{}, err
+		}
+		if id != "" {
 			r.ID, r.Summary = id, summary
 		}
 		r.Manifest = parseLists(b)
@@ -338,9 +343,15 @@ func openTasks(md string) []openTask {
 	return out
 }
 
-// parseManifest reads id and summary from relai.yaml — the only two fields the board needs.
-func parseManifest(b []byte) (id, summary string) {
-	for _, l := range strings.Split(string(b), "\n") {
+// supportedAPIVersion is the only relai.yaml apiVersion this reader knows (spec/relai-yaml.md, rule 5).
+const supportedAPIVersion = "relai.dev/v0"
+
+// parseManifest reads id and summary from relai.yaml — the only two fields the board needs. A file that
+// declares an apiVersion other than relai.dev/v0 is refused with an error: it does not guess. A missing
+// apiVersion is accepted, like RELAI itself does.
+func parseManifest(b []byte) (id, summary string, err error) {
+	text := strings.ReplaceAll(strings.TrimPrefix(string(b), "\ufeff"), "\r\n", "\n")
+	for _, l := range strings.Split(text, "\n") {
 		if len(l) == 0 || l[0] == ' ' || l[0] == '\t' || l[0] == '#' {
 			continue
 		}
@@ -354,9 +365,13 @@ func parseManifest(b []byte) (id, summary string) {
 			id = v
 		case "summary":
 			summary = v
+		case "apiVersion":
+			if v != supportedAPIVersion {
+				return "", "", fmt.Errorf("relai.yaml: unknown apiVersion %q (this server reads %s); file not read", v, supportedAPIVersion)
+			}
 		}
 	}
-	return id, summary
+	return id, summary, nil
 }
 
 func stripComment(s string) string {

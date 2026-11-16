@@ -1,0 +1,3 @@
+{"apiVersion": "relai.dev/v0", "id": "gateway", "summary": "The API gateway.",
+ "provides": ["http.gateway", "http.ratelimit"], "consumes": ["auth.oidc", "logs.ship"],
+ "links": ["invoice-pdf"]}
